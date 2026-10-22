@@ -31,4 +31,4 @@ if exist "outputs\after-frequency.specimen.json" (
 $zip = Join-Path $root 'dist\Specimen-portable-win64.zip'
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
-Write-Output "Built $zip ({0:N2} MB)" -f ((Get-Item $zip).Length / 1MB)
+Write-Output ('Built {0} ({1:N2} MB)' -f $zip, ((Get-Item $zip).Length / 1MB))
