@@ -96,14 +96,41 @@ impl Host {
             w.request_redraw()
         }
     }
-    fn capture(&mut self, path: &Path) -> Result<()> {
+    // Overlay reconciliation (upstream hameshgui@c5b794c3): with an
+    // overlay id, paint that component's diagnostic guides into this
+    // capture only and report its resolved geometry. Normal rendering,
+    // state and hit-testing are untouched.
+    fn capture(&mut self, path: &Path, overlay: Option<&str>) -> Result<Option<serde_json::Value>> {
         if let Some(p) = path.parent() {
             if !p.as_os_str().is_empty() {
                 std::fs::create_dir_all(p)?;
             }
         }
         let view = self.view();
-        let pix = self.editor.render(&view)?;
+        let mut pix = self.editor.render(&view)?;
+        let geom = overlay.and_then(|id| {
+            view.scene.nodes.iter().find(|n| n.id == id).map(|n| {
+                hamesh_render::overlay::draw_guides(&mut pix, n);
+                serde_json::json!({
+                    "id": n.id,
+                    "rect": n.rect,
+                    "text_geom": {
+                        "origin": n.origin,
+                        "content": n.content,
+                        "halign": n.halign,
+                        "advance": n.advance,
+                        "ink": n.ink,
+                        "trim": n.trim,
+                        "metrics": n.metrics,
+                        "baseline": n.baseline,
+                        "lines": n.lines,
+                    },
+                })
+            })
+        });
+        if overlay.is_some() && geom.is_none() {
+            bail!("no scene node for overlay {}", overlay.unwrap_or("?"));
+        }
         pix.save_png(path)?;
         let mut side = path.as_os_str().to_os_string();
         side.push(".json");
@@ -116,11 +143,11 @@ impl Host {
                 "text_diagnostics":artwork::inspect(&self.editor.history.document)?
             }))?,
         )?;
-        Ok(())
+        Ok(geom)
     }
     fn finish(&mut self) {
         let p = self.evidence.join("specimen-window.png");
-        if let Err(e) = self.capture(&p) {
+        if let Err(e) = self.capture(&p, None) {
             self.record("capture-failed", &e.to_string())
         }
         if self.editor.dirty() {
@@ -160,7 +187,7 @@ impl Host {
             }
             Op::Detail { id } => {
                 let view = self.view();
-                match hamesh_inspect::detail(&view.app, &view.layout, &id) {
+                match hamesh_inspect::detail(&view.app, &view.layout, Some(&view.scene), &id) {
                     Some(d) => self.ok(serde_json::to_value(d).unwrap()),
                     None => self.err("NOT_FOUND", format!("Unknown component {id}")),
                 }
@@ -265,13 +292,15 @@ impl Host {
                     }
                 }
             }
-            Op::Snapshot { path } => match self.capture(Path::new(&path)) {
-                Ok(()) => {
-                    self.record("eye.snapshot", &path);
-                    self.ok(serde_json::json!({"path":path,"renderer":"CPU"}))
+            Op::Snapshot { path, overlay } => {
+                match self.capture(Path::new(&path), overlay.as_deref()) {
+                    Ok(geom) => {
+                        self.record("eye.snapshot", &path);
+                        self.ok(serde_json::json!({"path":path,"renderer":"CPU","overlay":geom}))
+                    }
+                    Err(e) => self.err("BAD_OP", e),
                 }
-                Err(e) => self.err("BAD_OP", e),
-            },
+            }
             Op::Wait {
                 app_rev,
                 timeout_ms,

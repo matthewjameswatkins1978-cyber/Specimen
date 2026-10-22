@@ -60,7 +60,10 @@ fn panel(
     let c = if let Some(w) = width {
         c.with_prop("w", &w.to_string()).with_prop("flex_grow", "0")
     } else {
-        c
+        // Modern Hamesh defaults flex_grow to 0: a panel without an
+        // explicit width must opt into free space (the old blanket
+        // grow=1 is gone by upstream design).
+        c.with_prop("flex_grow", "1")
     };
     let c = if let Some(h) = height {
         c.with_prop("h", &h.to_string())
@@ -78,7 +81,9 @@ fn text_width(text: &str, size: f32) -> f32 {
         }
         *cache
             .entry((text.into(), size.to_bits()))
-            .or_insert_with(|| hamesh_text::TextLayout::new(text, 20000.0, size).width() + 24.0)
+            .or_insert_with(|| {
+                hamesh_text::TextLayout::new(text, 20000.0, size, None).width() + 24.0
+            })
     })
 }
 fn button(s: &mut b::Scope, id: &str, label: &str, primary: bool) {
@@ -397,12 +402,15 @@ impl Editor {
                             projects.sort();
                             for (i, p) in projects.into_iter().take(2).enumerate() {
                                 let id = format!("saved-{i}");
-                                button(
-                                    s,
-                                    &id,
-                                    &p.file_name().unwrap_or_default().to_string_lossy(),
-                                    false,
-                                );
+                                // Display the project stem: the full
+                                // filename (with extension and recovery
+                                // timestamps) is kept in project_path.
+                                let stem = p
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .and_then(|s| s.strip_suffix(".specimen"))
+                                    .unwrap_or("project");
+                                button(s, &id, stem, false);
                                 if let Some(c) = s.app.get_mut(&id) {
                                     c.props.insert(
                                         "project_path".into(),

@@ -9,7 +9,10 @@
 //! Usage: hamesh [--port P] [--token T] <op> [args...]
 //!   discovery (default when --port is absent): target/hamesh-inspect.json
 //! Ops: map | detail <id> | click <id|x,y> | key <Key...> | type <id> <text...>
-//!      | snapshot [path] | wait [rev] [timeout_ms]
+//!      | snapshot [path] [overlay-id] | wait [rev] [timeout_ms]
+//#! snapshot with overlay-id paints that component's diagnostic guides
+//! into the capture only (bounds/content/trim/ink/baseline/centres).
+//! Reconciled with upstream hameshgui@c5b794c3 (was 9fa37c33).
 //! Keys: Tab ShiftTab Enter Escape Backspace Delete Left Right Up Down
 //!       Home End Char:X (e.g. Char:a; Char:, is a comma)
 //!
@@ -154,10 +157,14 @@ fn build_op<'a>(
             }
             ("type", json!({"id": rest[0], "text": rest[1..].join(" ")}))
         }
-        "snapshot" => (
-            "snapshot",
-            json!({"path": rest.first().cloned().unwrap_or_else(|| "target/hamesh-ext-snapshot.png".to_string())}),
-        ),
+        // Reconciled with upstream hameshgui@c5b794c3 (was 9fa37c33).
+        "snapshot" => {
+            let mut v = json!({"path": rest.first().cloned().unwrap_or_else(|| "target/hamesh-ext-snapshot.png".to_string())});
+            if let Some(id) = rest.get(1) {
+                v["overlay"] = serde_json::Value::String(id.clone());
+            }
+            ("snapshot", v)
+        }
         "wait" => (
             "wait",
             json!({

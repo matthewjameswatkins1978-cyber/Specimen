@@ -674,7 +674,7 @@ dependencies = [
 [[package]]
 name = "hamesh-automation"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "hamesh-core",
  "hamesh-diag",
@@ -686,7 +686,7 @@ dependencies = [
 [[package]]
 name = "hamesh-blocks"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "hamesh-core",
  "hamesh-theme",
@@ -696,7 +696,7 @@ dependencies = [
 [[package]]
 name = "hamesh-core"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "serde",
 ]
@@ -704,7 +704,7 @@ dependencies = [
 [[package]]
 name = "hamesh-diag"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "serde",
  "serde_json",
@@ -713,7 +713,7 @@ dependencies = [
 [[package]]
 name = "hamesh-inspect"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "hamesh-core",
  "hamesh-layout",
@@ -725,9 +725,10 @@ dependencies = [
 [[package]]
 name = "hamesh-layout"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "hamesh-core",
+ "hamesh-text",
  "serde",
  "taffy",
 ]
@@ -735,7 +736,7 @@ dependencies = [
 [[package]]
 name = "hamesh-render"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "hamesh-core",
  "hamesh-layout",
@@ -744,16 +745,18 @@ dependencies = [
  "hamesh-theme",
  "kurbo 0.13.1",
  "serde",
+ "serde_json",
  "tiny-skia",
 ]
 
 [[package]]
 name = "hamesh-scene"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "hamesh-core",
  "hamesh-layout",
+ "hamesh-text",
  "hamesh-theme",
  "serde",
 ]
@@ -761,7 +764,7 @@ dependencies = [
 [[package]]
 name = "hamesh-text"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "cosmic-text",
  "parley",
@@ -773,12 +776,12 @@ dependencies = [
 [[package]]
 name = "hamesh-theme"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 
 [[package]]
 name = "hamesh-widgets"
 version = "0.2.0"
-source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8#9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8"
+source = "git+https://github.com/matthewjameswatkins1978-cyber/hameshgui?rev=c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f#c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f"
 dependencies = [
  "hamesh-core",
  "hamesh-text",

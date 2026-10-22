@@ -23,13 +23,13 @@ fontdb = "0.23"
 winit = "0.30"
 softbuffer = "0.4"
 arboard = { version = "3", default-features = false }
-hamesh-text = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-core = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-layout = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-scene = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-render = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-inspect = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-automation = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-widgets = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-diag = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
-hamesh-blocks = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-text = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-core = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-layout = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-scene = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-render = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-inspect = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-automation = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-widgets = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-diag = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
+hamesh-blocks = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f" }
