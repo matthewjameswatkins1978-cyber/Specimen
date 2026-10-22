@@ -1,0 +1,35 @@
+[package]
+name = "specimen"
+default-run = "specimen"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A native Hamesh typography and composition studio"
+
+[[bin]]
+name = "verify-artifact"
+path = "src/bin/verify-artifact.rs"
+test = false
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny-skia = "0.11"
+parley = "0.12"
+peniko = "0.3"
+swash = "0.2"
+fontdb = "0.23"
+winit = "0.30"
+softbuffer = "0.4"
+arboard = { version = "3", default-features = false }
+hamesh-text = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-core = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-layout = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-scene = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-render = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-inspect = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-automation = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-widgets = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-diag = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
+hamesh-blocks = { git = "https://github.com/matthewjameswatkins1978-cyber/hameshgui", rev = "9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8" }
