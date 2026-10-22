@@ -7,7 +7,7 @@ and colour controls, canvas selection/dragging, alignment, stacking,
 
 ## Run
 
-Unzip the portable Windows bundle and double-click **Launch Specimen.cmd**.
+Build the portable bundle with `scripts/package-portable.ps1`, unzip it and double-click **Launch Specimen.cmd**.
 It opens the native application and keeps projects/evidence beside the program.
 No Rust toolchain is needed for the portable build. Source development:
 
@@ -100,7 +100,7 @@ cargo run --bin hamesh-probe
 Tests cover model/persistence/rendering and 27 workspace configurations.
 The ignored starter generator is an optional artifact-producing diagnostic;
 it is not an untested acceptance feature. Live GUI evidence and direct-document
-evidence are separated in the delivery report.
+evidence are separated in the [delivery report](docs/DELIVERY.md).
 
 ## Boundaries
 
