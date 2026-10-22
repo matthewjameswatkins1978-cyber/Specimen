@@ -130,6 +130,61 @@ fn workspace_controls_are_reachable_and_unclipped_in_all_inspector_states() {
     );
 }
 
+/// QBC Phase 1 measurement: report-only viewport survey. Prints panel
+/// widths, canvas scale, text overflow and undersized controls for each
+/// viewport/selection/tab combination. Fails nothing; the numbers decide
+/// what Phase 2 contracts must cover.
+#[test]
+fn qbc_viewport_measurement() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("qbc-measure.specimen.json");
+    for (width, height) in [(1440, 980), (1100, 820), (1920, 1080), (800, 600)] {
+        for selection in [None, Some("title"), Some("orbit-red")] {
+            editor.selected = selection.map(str::to_string);
+            for tab in ["type", "layout", "canvas"] {
+                editor.tab = tab.into();
+                let view = editor.view(width, height);
+                let w = |id: &str| {
+                    view.layout
+                        .get(id)
+                        .map(|n| (n.rect.x, n.rect.w))
+                        .unwrap_or((-1.0, -1.0))
+                };
+                let (lx, lw) = w("library");
+                let (ix, iw) = w("inspector");
+                let mut overflow = Vec::new();
+                let mut tiny = Vec::new();
+                for n in &view.scene.nodes {
+                    if n.ghost {
+                        continue;
+                    }
+                    if n.advance > 0.0
+                        && n.lines == 1
+                        && n.origin[0] + n.advance > n.rect.x + n.content[2] + 1.0
+                    {
+                        overflow.push(format!(
+                            "{} adv={:.1} content_w={:.1}",
+                            n.id,
+                            n.advance,
+                            n.content[2] - n.content[0]
+                        ));
+                    }
+                    if n.rect.w < 28.0 && n.rect.h > 0.0 && !n.text.is_empty() {
+                        tiny.push(n.id.clone());
+                    }
+                }
+                println!(
+                    "[qbc] {width}x{height} sel={selection:?} tab={tab}: \
+                     library x={lx:.0} w={lw:.0}, inspector x={ix:.0} w={iw:.0}, \
+                     canvas scale={:.3}, paper={:.0}x{:.0} at ({:.0},{:.0}), \
+                     overflow={overflow:?}, narrow_text={tiny:?}",
+                    view.scale, view.paper.w, view.paper.h, view.paper.x, view.paper.y,
+                );
+            }
+        }
+    }
+}
+
 fn enter_field(editor: &mut Editor, field: &str, value: &str) -> anyhow::Result<()> {
     editor.focus_field(field);
     editor.insert(value)?;
