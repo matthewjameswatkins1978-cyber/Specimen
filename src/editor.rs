@@ -72,20 +72,6 @@ fn panel(
     };
     s.branch(c, kids);
 }
-fn text_width(text: &str, size: f32) -> f32 {
-    thread_local! {static WIDTHS:std::cell::RefCell<std::collections::HashMap<(String,u32),f32>>=std::cell::RefCell::new(std::collections::HashMap::new());}
-    WIDTHS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() > 512 {
-            cache.clear()
-        }
-        *cache
-            .entry((text.into(), size.to_bits()))
-            .or_insert_with(|| {
-                hamesh_text::TextLayout::new(text, 20000.0, size, None).width() + 24.0
-            })
-    })
-}
 fn button(s: &mut b::Scope, id: &str, label: &str, primary: bool) {
     b::button(
         s,
@@ -100,35 +86,17 @@ fn button(s: &mut b::Scope, id: &str, label: &str, primary: bool) {
             id,
         ),
     );
-    let in_row = s
-        .app
-        .get(id)
-        .and_then(|c| c.parent.as_ref())
-        .and_then(|p| s.app.get(&p.0))
-        .is_some_and(|p| p.props.get("layout").map(String::as_str) == Some("row"));
-    if in_row {
-        if let Some(c) = s.app.get_mut(id) {
-            c.props
-                .insert("w".into(), text_width(label, 13.0).max(62.0).to_string());
-        }
-    }
+    // QBC: no manual width — the framework measures button labels
+    // intrinsically (measure/render contract, pinned in hamesh-layout).
 }
 fn label(s: &mut b::Scope, id: &str, text: &str) {
     b::caption(s, id, text);
-    let in_row = s
-        .app
-        .get(id)
-        .and_then(|c| c.parent.as_ref())
-        .and_then(|p| s.app.get(&p.0))
-        .is_some_and(|p| p.props.get("layout").map(String::as_str) == Some("row"));
+    // QBC: no manual width — the framework measures caption text
+    // intrinsically (measure/render contract, pinned in hamesh-layout).
     if let Some(c) = s.app.get_mut(id) {
         c.props.insert("h".into(), "22".into());
         c.props.insert("pad".into(), "0".into());
         c.props.insert("font_size".into(), "12".into());
-        if in_row {
-            c.props
-                .insert("w".into(), text_width(text, 12.0).to_string());
-        }
     }
 }
 fn row(s: &mut b::Scope, id: &str, height: f32, kids: impl FnOnce(&mut b::Scope)) {
