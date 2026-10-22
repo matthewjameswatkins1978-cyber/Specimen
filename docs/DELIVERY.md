@@ -68,8 +68,8 @@ Earlier run artefacts from the original location are preserved in
 Smoke test performed from a clean extraction of that zip: the launcher started
 the real window, `hamesh map` returned the Eye tree, `hamesh snapshot`
 captured the frame, evidence was written beside the program, and the app
-exited with code 0 at its smoke deadline. `dist/` is gitignored; publishing
-the zip as a GitHub release is a human decision.
+exited with code 0 at its smoke deadline. `dist/` is gitignored; the zip is published as GitHub release
+[v0.1.0](https://github.com/matthewjameswatkins1978-cyber/Specimen/releases/tag/v0.1.0).
 
 ## Hamesh capabilities exercised
 
@@ -97,6 +97,8 @@ operation lacking a revision guard.
 
 ## Human decisions genuinely required
 
-1. Publish the portable zip as a GitHub release (externally visible).
+1. Publish the portable zip as a GitHub release (externally visible) -
+  **done**: [v0.1.0](https://github.com/matthewjameswatkins1978-cyber/Specimen/releases/tag/v0.1.0),
+  published 22 October 2026.
 2. Delete the original Codex source folder now that the move is verified.
 3. Optionally scope a GPU-parity run if GPU evidence is wanted.
