@@ -368,11 +368,28 @@ impl Editor {
                                 .filter(|p| p.to_string_lossy().ends_with(".specimen.json"))
                                 .collect::<Vec<_>>();
                             projects.sort();
+                            // QBC workspace: saved projects and autosave
+                            // recovery are separate regions. Recovery files
+                            // present as recovery, not as project names.
+                            // Recovery = "recovery.specimen.json" or a
+                            // "recovery-*" timestamped autosave. Note
+                            // file_stem strips only the last extension, so
+                            // match on the full file name here (the display
+                            // stem below strips ".specimen" separately). A
+                            // user project literally named Recovery would
+                            // land here; accepted over showing raw autosave
+                            // names as projects.
+                            let (recovery, projects): (Vec<_>, Vec<_>) =
+                                projects.into_iter().partition(|p| {
+                                    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                                        n == "recovery.specimen.json" || n.starts_with("recovery-")
+                                    })
+                                });
+                            label(s, "saved-section", "SAVED PROJECTS");
                             for (i, p) in projects.into_iter().take(2).enumerate() {
                                 let id = format!("saved-{i}");
                                 // Display the project stem: the full
-                                // filename (with extension and recovery
-                                // timestamps) is kept in project_path.
+                                // filename is kept in project_path.
                                 let stem = p
                                     .file_stem()
                                     .and_then(|s| s.to_str())
@@ -380,6 +397,26 @@ impl Editor {
                                     .unwrap_or("project");
                                 button(s, &id, stem, false);
                                 if let Some(c) = s.app.get_mut(&id) {
+                                    c.props.insert(
+                                        "project_path".into(),
+                                        p.to_string_lossy().into_owned(),
+                                    );
+                                    c.props.insert("h".into(), "30".into());
+                                }
+                            }
+                            // Most recent autosave only, by file
+                            // modification time: older recovery files stay
+                            // on disk but don't crowd the list.
+                            let mut recovery = recovery;
+                            recovery.sort_by_key(|p| {
+                                std::fs::metadata(p)
+                                    .and_then(|m| m.modified())
+                                    .unwrap_or(std::time::UNIX_EPOCH)
+                            });
+                            if let Some(p) = recovery.into_iter().next_back() {
+                                label(s, "recovery-section", "AUTOSAVE RECOVERY");
+                                button(s, "saved-recovery", "Recovered work", false);
+                                if let Some(c) = s.app.get_mut("saved-recovery") {
                                     c.props.insert(
                                         "project_path".into(),
                                         p.to_string_lossy().into_owned(),
