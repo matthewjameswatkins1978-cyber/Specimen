@@ -552,6 +552,21 @@ impl Editor {
                                     button(s, "delete", "Delete", false);
                                 });
                             } else {
+                                // QBC empty state: a genuinely useful
+                                // document overview, not just a hint.
+                                label(s, "overview-section", "DOCUMENT OVERVIEW");
+                                label(s, "overview-title", &self.history.document.title);
+                                label(
+                                    s,
+                                    "overview-stats",
+                                    &format!(
+                                        "{} layers · {} x {} px{}",
+                                        self.history.document.elements.len(),
+                                        self.history.document.width,
+                                        self.history.document.height,
+                                        if self.dirty() { " · unsaved" } else { "" },
+                                    ),
+                                );
                                 label(s, "selection-hint", "Select text or a shape on the canvas.");
                                 self.field(s, "background", "Paper");
                                 button(s, "document-settings", "Document settings", false);
