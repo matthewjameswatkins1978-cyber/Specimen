@@ -32,6 +32,7 @@ struct Drag {
 enum Zoom {
     Fit,
     Selected,
+    Actual,
 }
 pub struct Editor {
     pub history: History,
@@ -44,6 +45,9 @@ pub struct Editor {
     pub guides: bool,
     pub layer_offset: usize,
     zoom: Zoom,
+    /// Screen-pixel pan for Actual-size zoom. Clamped so the
+    /// canvas center never leaves the paper.
+    pan: (f32, f32),
     /// When true, the layer list scrolls to keep the selection visible.
     /// Manual Up/Down scrolling clears it until the selection changes.
     follow_selection: bool,
@@ -150,6 +154,14 @@ pub(crate) fn selection_scale(area_w: f32, area_h: f32, e: &Element) -> f32 {
         .min((area_h - 32.0) / e.h.max(0.01))
         .clamp(0.01, 8.0)
 }
+/// Pan bounds in screen pixels: the canvas center must stay on
+/// the paper, so panning can never lose the artwork.
+pub(crate) fn clamp_pan(pan: (f32, f32), paper_w: f32, paper_h: f32) -> (f32, f32) {
+    (
+        pan.0.clamp(-paper_w / 2.0, paper_w / 2.0),
+        pan.1.clamp(-paper_h / 2.0, paper_h / 2.0),
+    )
+}
 pub(crate) fn library_capacity(
     panel_h: f32,
     saved_available: usize,
@@ -201,6 +213,7 @@ impl Editor {
             layer_offset: 0,
             follow_selection: true,
             zoom: Zoom::Fit,
+            pan: (0.0, 0.0),
             composer: Composer::new(),
             active: None,
             select_all: false,
@@ -383,10 +396,10 @@ impl Editor {
                 button(
                     s,
                     "zoom",
-                    if self.zoom == Zoom::Fit {
-                        "Zoom: Fit"
-                    } else {
-                        "Zoom: Selection"
+                    match self.zoom {
+                        Zoom::Fit => "Zoom: Fit",
+                        Zoom::Selected => "Zoom: Selection",
+                        Zoom::Actual => "Zoom: Actual",
                     },
                     false,
                 );
@@ -821,13 +834,23 @@ impl Editor {
         // Selection zoom centers the element in the canvas at the
         // largest scale that fits it. Nothing selected: honest Fit.
         let (scale, selected) = match (self.zoom, self.selected.as_deref()) {
+            (Zoom::Actual, _) => (1.0, None),
             (Zoom::Selected, Some(id)) => match d.elements.iter().find(|e| e.id == id) {
                 Some(e) => (selection_scale(area.w, area.h, e), Some(e)),
                 None => (fit, None),
             },
             _ => (fit, None),
         };
-        let paper = if let Some(e) = selected {
+        // True size centers the artboard; arrow keys explore it by
+        // panning. The clamp keeps the canvas center on the paper.
+        let paper = if self.zoom == Zoom::Actual {
+            Rect {
+                x: area.x + area.w / 2.0 - d.width as f32 / 2.0 + self.pan.0,
+                y: area.y + area.h / 2.0 - d.height as f32 / 2.0 + self.pan.1,
+                w: d.width as f32,
+                h: d.height as f32,
+            }
+        } else if let Some(e) = selected {
             Rect {
                 x: area.x + area.w / 2.0 - (e.x + e.w / 2.0) * scale,
                 y: area.y + area.h / 2.0 - (e.y + e.h / 2.0) * scale,
@@ -848,9 +871,10 @@ impl Editor {
         if let Some(c) = app.get_mut("canvas-title") {
             c.props.insert(
                 "text".into(),
-                match selected {
-                    Some(_) => "SELECTION / FIT",
-                    None => "ARTBOARD / FIT",
+                match (self.zoom, selected) {
+                    (Zoom::Actual, _) => "ACTUAL SIZE",
+                    (_, Some(_)) => "SELECTION / FIT",
+                    _ => "ARTBOARD / FIT",
                 }
                 .into(),
             );
@@ -1305,8 +1329,9 @@ impl Editor {
         self.update(|d| *d = doc)?;
         self.project = path;
         self.saved = self.save_identity();
-        self.select(None);
+        self.selected = None;
         self.layer_offset = 0;
+        self.pan = (0.0, 0.0);
         self.status = "Project opened.".into();
         Ok(())
     }
@@ -1316,6 +1341,7 @@ impl Editor {
             self.update(|d| *d = doc)?;
             self.select(None);
             self.layer_offset = 0;
+            self.pan = (0.0, 0.0);
             self.status = "Starter opened. Undo returns to your previous design.".into();
             return Ok(());
         }
@@ -1341,6 +1367,7 @@ impl Editor {
                 self.update(|d| *d = Document::blank())?;
                 self.select(None);
                 self.layer_offset = 0;
+                self.pan = (0.0, 0.0);
             }
             "undo" => {
                 self.history.undo();
@@ -1356,11 +1383,14 @@ impl Editor {
             "zoom" => {
                 self.zoom = match self.zoom {
                     Zoom::Fit => Zoom::Selected,
-                    Zoom::Selected => Zoom::Fit,
+                    Zoom::Selected => Zoom::Actual,
+                    Zoom::Actual => Zoom::Fit,
                 };
+                self.pan = (0.0, 0.0);
                 self.status = match self.zoom {
                     Zoom::Fit => "Zoom: whole artboard.",
                     Zoom::Selected => "Zoom: selection fills the canvas.",
+                    Zoom::Actual => "Zoom: actual size. Arrow keys pan.",
                 }
                 .into();
             }
@@ -1639,6 +1669,24 @@ impl Editor {
                         "Down" => e.y = (e.y + 1.0).min(h - e.h),
                         _ => {}
                     })?;
+                }
+                "Left" | "Right" | "Up" | "Down"
+                    if self.selected.is_none() && !matches!(self.zoom, Zoom::Fit) =>
+                {
+                    // Pan the zoomed canvas with the same arrow
+                    // semantics as nudging: Right moves the paper right.
+                    let step = 20.0;
+                    let (dx, dy) = match key {
+                        "Left" => (-step, 0.0),
+                        "Right" => (step, 0.0),
+                        "Up" => (0.0, -step),
+                        _ => (0.0, step),
+                    };
+                    self.pan = clamp_pan(
+                        (self.pan.0 + dx, self.pan.1 + dy),
+                        view.paper.w,
+                        view.paper.h,
+                    );
                 }
                 _ => {}
             }

@@ -681,6 +681,63 @@ fn zoom_focus_centers_selection_and_clips_to_canvas() {
     assert!((view.scale - fit).abs() < 0.01);
 }
 
+/// Actual-size zoom: true scale centered on the canvas, arrow-key
+/// panning that can never lose the artwork, and a three-way toggle.
+#[test]
+fn zoom_actual_centers_true_size_and_pans_with_arrows() {
+    use crate::editor::clamp_pan;
+    // The canvas center never leaves the paper.
+    assert_eq!(clamp_pan((500.0, -700.0), 900.0, 1200.0), (450.0, -600.0));
+    assert_eq!(clamp_pan((10.0, 20.0), 900.0, 1200.0), (10.0, 20.0));
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("zoom-actual.specimen.json");
+    editor.selected = Some("channel".into());
+    editor.action("zoom").unwrap();
+    editor.action("zoom").unwrap();
+    let view = editor.view(1440, 980);
+    assert_eq!(view.scale, 1.0);
+    let area = view.layout.get("canvas").unwrap().rect.clone();
+    let (cx, cy) = (area.x + area.w / 2.0, area.y + area.h / 2.0);
+    assert!((view.paper.x + 900.0 / 2.0 - cx).abs() < 1.0);
+    assert!((view.paper.y + 1200.0 / 2.0 - cy).abs() < 1.0);
+    let title = view
+        .app
+        .get("canvas-title")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(title, "ACTUAL SIZE");
+    let zoom = view
+        .app
+        .get("zoom")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(zoom, "Zoom: Actual");
+    // Arrows pan with nothing selected; the artwork stays reachable.
+    editor.selected = None;
+    let view = editor.view(1440, 980);
+    editor.key(&view, "Right").unwrap();
+    let moved = editor.view(1440, 980);
+    assert!((moved.paper.x - view.paper.x - 20.0).abs() < 0.01);
+    for _ in 0..100 {
+        let v = editor.view(1440, 980);
+        editor.key(&v, "Right").unwrap();
+    }
+    let view = editor.view(1440, 980);
+    assert!((view.paper.x - cx).abs() < 1.0);
+    // The zoomed frame still renders at full size, clipped to canvas.
+    let pix = editor.render(&view).unwrap();
+    assert_eq!((pix.width(), pix.height()), (1440, 980));
+    // Toggling on returns to Fit.
+    editor.action("zoom").unwrap();
+    let view = editor.view(1440, 980);
+    let fit = ((area.w - 40.0) / 900.0)
+        .min((area.h - 32.0) / 1200.0)
+        .max(0.01);
+    assert!((view.scale - fit).abs() < 0.01);
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.
