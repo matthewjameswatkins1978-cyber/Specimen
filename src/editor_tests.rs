@@ -833,6 +833,30 @@ fn library_collapse_hands_room_to_layers() {
     assert!(view.layout.get("template-0").is_some());
 }
 
+/// Saved state in the header: the document title names unsaved work.
+#[test]
+fn header_names_unsaved_work() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("header-dirty.specimen.json");
+    let title_of = |editor: &Editor| {
+        editor
+            .view(1440, 980)
+            .app
+            .get("project-title")
+            .and_then(|c| c.props.get("text"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    // Fresh, never-saved documents read as unsaved.
+    assert!(title_of(&editor).ends_with(" · unsaved"));
+    editor.action("save").unwrap();
+    assert_eq!(title_of(&editor), editor.history.document.title);
+    // Editing dirties it again.
+    editor.selected = Some("title".into());
+    enter_field(&mut editor, "x", "64").unwrap();
+    assert!(title_of(&editor).ends_with(" · unsaved"));
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.

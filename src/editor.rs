@@ -397,7 +397,14 @@ impl Editor {
                     b::title(s, "brand-title", "Specimen");
                 });
                 panel(s, "project-header", None, Some(62.0), "header", |s| {
-                    b::heading(s, "project-title", &self.history.document.title);
+                    // The header names unsaved work, not just the title:
+                    // dirty state belongs where the eye rests.
+                    let title = if self.dirty() {
+                        format!("{} · unsaved", self.history.document.title)
+                    } else {
+                        self.history.document.title.clone()
+                    };
+                    b::heading(s, "project-title", &title);
                 });
                 b::row(
                     s,
