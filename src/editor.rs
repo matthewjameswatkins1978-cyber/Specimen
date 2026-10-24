@@ -75,6 +75,15 @@ fn panel(
     };
     s.branch(c, kids);
 }
+/// Fixed air between toolbar groups: a ghost holds the width,
+/// paints nothing and never intercepts the Hand.
+fn strut(s: &mut b::Scope, id: &str, width: f32) {
+    s.leaf(
+        Component::new(id, Role::Panel, id)
+            .with_prop("ghost", "true")
+            .with_prop("w", &width.to_string()),
+    );
+}
 fn button(s: &mut b::Scope, id: &str, label: &str, primary: bool) {
     b::button(
         s,
@@ -325,14 +334,19 @@ impl Editor {
                     },
                 );
             });
+            // Draw, history and view read as groups: 16px ghost
+            // struts separate them at twice the standard 8px gap.
+            // The file actions already live in the header, so the
+            // toolbar needs no mode label.
             row(&mut root, "toolbar", 48.0, |s| {
-                label(s, "toolbar-name", "  COMPOSITION STUDIO");
                 b::spacer(s, "toolbar-spacer");
                 button(s, "add-text", "+ Text", false);
                 button(s, "add-rect", "+ Rectangle", false);
                 button(s, "add-ellipse", "+ Ellipse", false);
+                strut(s, "tools-gap", 16.0);
                 button(s, "undo", "Undo", false);
                 button(s, "redo", "Redo", false);
+                strut(s, "history-gap", 16.0);
                 button(
                     s,
                     "guides",
@@ -707,6 +721,7 @@ impl Editor {
             ("layers-title", 58.0),
             ("layers-up", 44.0),
             ("layers-down", 62.0),
+            ("canvas-size", 170.0),
             ("status", (width as f32 - 200.0).max(100.0)),
             ("engine-label", 160.0),
         ] {
@@ -745,6 +760,19 @@ impl Editor {
             w: d.width as f32 * scale,
             h: d.height as f32 * scale,
         };
+        // The heading quantifies the fit it names: artwork size
+        // and the live zoom percentage.
+        if let Some(c) = app.get_mut("canvas-size") {
+            c.props.insert(
+                "text".into(),
+                format!(
+                    "{} x {} px · {}%",
+                    d.width,
+                    d.height,
+                    (scale * 100.0).round()
+                ),
+            );
+        }
         // Read-only document geometry in the Eye. Ghost nodes paint nothing and
         // never intercept Hamesh's pointer dispatch. Canvas stacking stays canonical.
         for (i, e) in d.elements.iter().enumerate() {

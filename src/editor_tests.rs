@@ -567,6 +567,40 @@ fn inspector_separates_levels_and_states_alignment() {
     assert_eq!(variant("align-left"), "ghost");
 }
 
+/// Toolbar groups and live zoom: ghost struts separate the draw,
+/// history and view groups, and the canvas heading quantifies
+/// the fit zoom it names.
+#[test]
+fn toolbar_groups_and_zoom_readout() {
+    let fixture = Fixture::new();
+    let editor = fixture.editor("toolbar-zoom.specimen.json");
+    let view = editor.view(1440, 980);
+    // The mode label is gone; fixed air separates the groups.
+    assert!(view.layout.get("toolbar-name").is_none());
+    for id in ["tools-gap", "history-gap"] {
+        let node = view.layout.get(id).expect("group strut holds layout room");
+        assert!((node.rect.w - 16.0).abs() < 0.5);
+        let ghost = view
+            .app
+            .get(id)
+            .and_then(|c| c.props.get("ghost"))
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ghost, "true");
+    }
+    // The heading states artwork size and the live fit zoom.
+    let text = view
+        .app
+        .get("canvas-size")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        text,
+        format!("{} x {} px · {}%", 900, 1200, (view.scale * 100.0).round())
+    );
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.
