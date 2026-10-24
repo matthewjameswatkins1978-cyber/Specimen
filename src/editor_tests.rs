@@ -780,16 +780,71 @@ fn weight_quickset_and_heading_state_the_selection() {
     assert!(view.layout.get("weight-400").is_none());
 }
 
+/// Collapsible library: hiding the template cards hands the room
+/// to layers, and showing them restores the browser.
+#[test]
+fn library_collapse_hands_room_to_layers() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("library-collapse.specimen.json");
+    // Expanded by default: the browser is present.
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("template-0").is_some());
+    // Collapse: cards go away, rows grow, controls stay reachable.
+    editor.action("library-toggle").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("template-0").is_none());
+    assert!(view.layout.get("blank").is_some());
+    let rows = view
+        .app
+        .components
+        .keys()
+        .filter(|id| id.starts_with("layer-"))
+        .count();
+    assert_eq!(rows, 8);
+    let toggle = view
+        .app
+        .get("library-toggle")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(toggle, "+");
+    for (id, component) in &view.app.components {
+        if !matches!(component.role, Role::Button | Role::TextInput) {
+            continue;
+        }
+        if !component.enabled {
+            continue;
+        }
+        let node = view.layout.get(id).expect("Eye geometry");
+        let r = &node.rect;
+        assert!(
+            node.effectively_visible
+                && !node.clipped_by_parent
+                && r.x >= -0.5
+                && r.y >= -0.5
+                && r.x + r.w <= 1440.0 + 0.5
+                && r.y + r.h <= 820.0 + 0.5,
+            "{id} clipped/outside: {r:?}"
+        );
+    }
+    // Expand again: the browser returns.
+    editor.action("library-toggle").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("template-0").is_some());
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.
 #[test]
 fn library_capacity_matches_measured_chrome() {
-    assert_eq!(library_capacity(840.0, 2, true), (3, 2));
-    assert_eq!(library_capacity(820.0, 1, true), (4, 1));
-    assert_eq!(library_capacity(680.0, 2, true), (2, 0));
-    assert_eq!(library_capacity(940.0, 2, true), (6, 2));
-    assert_eq!(library_capacity(680.0, 0, false), (3, 0));
+    assert_eq!(library_capacity(840.0, 2, true, true), (3, 2));
+    assert_eq!(library_capacity(820.0, 1, true, true), (3, 1));
+    assert_eq!(library_capacity(680.0, 2, true, true), (1, 0));
+    assert_eq!(library_capacity(940.0, 2, true, true), (5, 2));
+    assert_eq!(library_capacity(680.0, 0, false, true), (3, 0));
+    assert_eq!(library_capacity(680.0, 2, true, false), (8, 2));
+    assert_eq!(library_capacity(840.0, 0, false, false), (8, 0));
 }
 
 /// Seeded-workspace regression for the clipped recovery entry: with
@@ -818,7 +873,7 @@ fn library_with_saved_and_recovery_projects_stays_unclipped() {
                 editor.tab = tab.into();
                 let view = editor.view(width, height);
                 let context = format!("{width}x{height} selection={selection:?} tab={tab}");
-                let (rows, saved_shown) = library_capacity(height as f32 - 140.0, 3, true);
+                let (rows, saved_shown) = library_capacity(height as f32 - 140.0, 3, true, true);
                 for i in 0..saved_shown {
                     let id = format!("saved-{i}");
                     if view.layout.get(&id).is_none() {

@@ -51,6 +51,9 @@ pub struct Editor {
     /// When true, the layer list scrolls to keep the selection visible.
     /// Manual Up/Down scrolling clears it until the selection changes.
     follow_selection: bool,
+    /// Design-library browser open: template cards show. Collapsed,
+    /// the room goes to layers and saved projects instead.
+    library_open: bool,
     pub composer: Composer,
     pub active: Option<String>,
     select_all: bool,
@@ -140,10 +143,11 @@ fn row(s: &mut b::Scope, id: &str, height: f32, kids: impl FnOnce(&mut b::Scope)
 }
 /// Library capacity: the (layer rows, saved rows) that fit the fixed
 /// library panel without clipping. All heights are measured chrome
-/// (panel pad 12, gap 8): title 22, three template cards 3 * (84 + 22),
-/// blank 36, layers heading 36, position caption 22, layer rows 28,
-/// section labels 22,
-/// saved/recovery rows 30, plus one spacer kid. Short panels shed
+/// (panel pad 12, gap 8). Expanded: heading row 36, three template
+/// cards 3 * (84 + 22), blank 36, layers heading 36, position
+/// caption 22. Collapsed: heading row 36, blank 36, layers heading
+/// 36, position caption 22. Both add layer rows 28, section labels
+/// 22, saved/recovery rows 30, plus one spacer kid. Short panels shed
 /// saved rows before layer rows (minimum 1); the latest autosave
 /// recovery always stays visible. The saved header only renders
 /// when saved rows fit.
@@ -166,29 +170,42 @@ pub(crate) fn library_capacity(
     panel_h: f32,
     saved_available: usize,
     has_recovery: bool,
+    expanded: bool,
 ) -> (usize, usize) {
-    fn fits(panel_h: f32, layers: usize, saved: usize, has_recovery: bool) -> bool {
+    // Measured fixed chrome per library mode, plus one spacer kid.
+    let (fixed, base) = if expanded {
+        (448.0, 11.0)
+    } else {
+        (130.0, 5.0)
+    };
+    fn fits(
+        panel_h: f32,
+        fixed: f32,
+        base: f32,
+        layers: usize,
+        saved: usize,
+        has_recovery: bool,
+    ) -> bool {
         let sections = if saved > 0 {
             22.0 + 30.0 * saved as f32
         } else {
             0.0
         } + if has_recovery { 22.0 + 30.0 } else { 0.0 };
-        // +1: the spacer below the rows is always present.
-        let kids = 11.0
+        let kids = base
             + layers as f32
             + if saved > 0 { 1.0 + saved as f32 } else { 0.0 }
             + if has_recovery { 2.0 } else { 0.0 };
-        24.0 + 434.0 + 28.0 * layers as f32 + sections + 8.0 * (kids - 1.0) <= panel_h
+        24.0 + fixed + 28.0 * layers as f32 + sections + 8.0 * (kids - 1.0) <= panel_h
     }
     let saved_available = saved_available.min(2);
     for layers in (1..=8).rev() {
-        if fits(panel_h, layers, saved_available, has_recovery) {
+        if fits(panel_h, fixed, base, layers, saved_available, has_recovery) {
             return (layers, saved_available);
         }
     }
     for saved in (0..saved_available).rev() {
         for layers in (1..=8).rev() {
-            if fits(panel_h, layers, saved, has_recovery) {
+            if fits(panel_h, fixed, base, layers, saved, has_recovery) {
                 return (layers, saved);
             }
         }
@@ -212,6 +229,7 @@ impl Editor {
             guides: true,
             layer_offset: 0,
             follow_selection: true,
+            library_open: true,
             zoom: Zoom::Fit,
             pan: (0.0, 0.0),
             composer: Composer::new(),
@@ -450,19 +468,38 @@ impl Editor {
                         Some(height.saturating_sub(140) as f32),
                         "window",
                         |s| {
-                            label(s, "library-title", "DESIGN LIBRARY");
-                            for (i, name) in ["After Frequency", "Neue Form", "Soft Signal"]
-                                .iter()
-                                .enumerate()
-                            {
-                                let id = format!("template-{i}");
-                                button(s, &id, "", false);
-                                if let Some(c) = s.app.get_mut(&id) {
-                                    c.name = format!("Open starter: {name}");
-                                    c.props.insert("h".into(), "84".into());
-                                    c.props.insert("template".into(), i.to_string());
+                            row(s, "library-heading", 36.0, |s| {
+                                label(s, "library-title", "DESIGN LIBRARY");
+                                b::spacer(s, "library-head-space");
+                                button(
+                                    s,
+                                    "library-toggle",
+                                    if self.library_open { "-" } else { "+" },
+                                    false,
+                                );
+                                if let Some(c) = s.app.get_mut("library-toggle") {
+                                    c.name = if self.library_open {
+                                        "Collapse design library"
+                                    } else {
+                                        "Expand design library"
+                                    }
+                                    .into();
                                 }
-                                label(s, &format!("template-title-{i}"), name);
+                            });
+                            if self.library_open {
+                                for (i, name) in ["After Frequency", "Neue Form", "Soft Signal"]
+                                    .iter()
+                                    .enumerate()
+                                {
+                                    let id = format!("template-{i}");
+                                    button(s, &id, "", false);
+                                    if let Some(c) = s.app.get_mut(&id) {
+                                        c.name = format!("Open starter: {name}");
+                                        c.props.insert("h".into(), "84".into());
+                                        c.props.insert("template".into(), i.to_string());
+                                    }
+                                    label(s, &format!("template-title-{i}"), name);
+                                }
                             }
                             button(s, "blank", "New blank canvas", false);
                             row(s, "layers-heading", 36.0, |s| {
@@ -516,6 +553,7 @@ impl Editor {
                                 height.saturating_sub(140) as f32,
                                 projects.len(),
                                 recovery_latest.is_some(),
+                                self.library_open,
                             );
                             // Selection follow: keep the selected layer
                             // inside the visible window. Manual Up/Down
@@ -1440,6 +1478,15 @@ impl Editor {
                     Zoom::Fit => "Zoom: whole artboard.",
                     Zoom::Selected => "Zoom: selection fills the canvas.",
                     Zoom::Actual => "Zoom: actual size. Arrow keys pan.",
+                }
+                .into();
+            }
+            "library-toggle" => {
+                self.library_open = !self.library_open;
+                self.status = if self.library_open {
+                    "Library shown."
+                } else {
+                    "Library hidden; layers have the room."
                 }
                 .into();
             }
