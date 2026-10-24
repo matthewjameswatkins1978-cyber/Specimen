@@ -802,7 +802,7 @@ impl Editor {
                                             if let Some(c) = s.app.get_mut(&id) {
                                                 c.name = format!("Paint selection {hex}");
                                                 c.props.insert("h".into(), "28".into());
-                                                c.props.insert("w".into(), "28".into());
+                                                c.props.insert("w".into(), "30".into());
                                             }
                                         }
                                         b::spacer(s, "palette-space");
