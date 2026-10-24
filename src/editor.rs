@@ -34,6 +34,9 @@ pub struct Editor {
     pub tab: String,
     pub guides: bool,
     pub layer_offset: usize,
+    /// When true, the layer list scrolls to keep the selection visible.
+    /// Manual Up/Down scrolling clears it until the selection changes.
+    follow_selection: bool,
     pub composer: Composer,
     pub active: Option<String>,
     select_all: bool,
@@ -115,9 +118,12 @@ fn row(s: &mut b::Scope, id: &str, height: f32, kids: impl FnOnce(&mut b::Scope)
 /// Library capacity: the (layer rows, saved rows) that fit the fixed
 /// library panel without clipping. All heights are measured chrome
 /// (panel pad 12, gap 8): title 22, three template cards 3 * (84 + 22),
-/// blank 36, layers heading 36, layer rows 28, section labels 22,
-/// saved/recovery rows 30. Short panels shed saved rows before layer
-/// rows (minimum 1); the latest autosave recovery always stays visible.
+/// blank 36, layers heading 36, position caption 22, layer rows 28,
+/// section labels 22,
+/// saved/recovery rows 30, plus one spacer kid. Short panels shed
+/// saved rows before layer rows (minimum 1); the latest autosave
+/// recovery always stays visible. The saved header only renders
+/// when saved rows fit.
 pub(crate) fn library_capacity(
     panel_h: f32,
     saved_available: usize,
@@ -129,11 +135,12 @@ pub(crate) fn library_capacity(
         } else {
             0.0
         } + if has_recovery { 22.0 + 30.0 } else { 0.0 };
-        let kids = 9.0
+        // +1: the spacer below the rows is always present.
+        let kids = 11.0
             + layers as f32
             + if saved > 0 { 1.0 + saved as f32 } else { 0.0 }
             + if has_recovery { 2.0 } else { 0.0 };
-        24.0 + 412.0 + 28.0 * layers as f32 + sections + 8.0 * (kids - 1.0) <= panel_h
+        24.0 + 434.0 + 28.0 * layers as f32 + sections + 8.0 * (kids - 1.0) <= panel_h
     }
     let saved_available = saved_available.min(2);
     for layers in (1..=8).rev() {
@@ -166,6 +173,7 @@ impl Editor {
             tab: "type".into(),
             guides: true,
             layer_offset: 0,
+            follow_selection: true,
             composer: Composer::new(),
             active: None,
             select_all: false,
@@ -420,6 +428,38 @@ impl Editor {
                                 projects.len(),
                                 recovery_latest.is_some(),
                             );
+                            // Selection follow: keep the selected layer
+                            // inside the visible window. Manual Up/Down
+                            // scrolling holds its position until the
+                            // selection changes again.
+                            let total = self.history.document.elements.len();
+                            let max_start = total.saturating_sub(rows.min(total.max(1)));
+                            let mut start = self.layer_offset.min(max_start);
+                            if self.follow_selection {
+                                if let Some(sel) = self.selected.as_deref() {
+                                    if let Some(pos) = self
+                                        .history
+                                        .document
+                                        .elements
+                                        .iter()
+                                        .rev()
+                                        .position(|e| e.id == sel)
+                                    {
+                                        if pos < start {
+                                            start = pos;
+                                        } else if pos >= start + rows {
+                                            start = (pos + 1 - rows).min(max_start);
+                                        }
+                                    }
+                                }
+                            }
+                            let end = (start + rows).min(total);
+                            let position = if total == 0 {
+                                "No layers".to_string()
+                            } else {
+                                format!("Showing {}-{} of {}", start + 1, end, total)
+                            };
+                            label(s, "layers-position", &position);
                             for (n, e) in self
                                 .history
                                 .document
@@ -427,7 +467,7 @@ impl Editor {
                                 .iter()
                                 .enumerate()
                                 .rev()
-                                .skip(self.layer_offset)
+                                .skip(start)
                                 .take(rows)
                             {
                                 let id = format!("layer-{}", e.id);
@@ -443,7 +483,12 @@ impl Editor {
                                 }
                             }
                             b::spacer(s, "library-space");
-                            label(s, "saved-section", "SAVED PROJECTS");
+                            // No empty section header: when no saved
+                            // row fits, the header would promise
+                            // projects the list cannot show.
+                            if saved_shown > 0 {
+                                label(s, "saved-section", "SAVED PROJECTS");
+                            }
                             for (i, p) in projects.into_iter().take(saved_shown).enumerate() {
                                 let id = format!("saved-{i}");
                                 // Display the project stem: the full
@@ -849,10 +894,19 @@ impl Editor {
     }
     /// Keep the selection across undo/redo when the element still exists;
     /// otherwise clear it so the inspector never points at a removed element.
+    /// Assign the selection. Any new selection re-arms list follow so
+    /// the layer list scrolls it into view; manual Up/Down scrolling
+    /// disarms follow until the next selection change.
+    fn select(&mut self, id: Option<String>) {
+        self.selected = id;
+        self.follow_selection = true;
+    }
     fn retain_selection(&mut self) {
         if let Some(id) = self.selected.clone() {
             if !self.history.document.elements.iter().any(|e| e.id == id) {
                 self.selected = None;
+            } else {
+                self.follow_selection = true;
             }
         }
     }
@@ -982,14 +1036,15 @@ impl Editor {
             self.active = None;
             let px = (x - view.paper.x) / view.scale;
             let py = (y - view.paper.y) / view.scale;
-            self.selected = self
-                .history
-                .document
-                .elements
-                .iter()
-                .rev()
-                .find(|e| px >= e.x && py >= e.y && px < e.x + e.w && py < e.y + e.h)
-                .map(|e| e.id.clone());
+            self.select(
+                self.history
+                    .document
+                    .elements
+                    .iter()
+                    .rev()
+                    .find(|e| px >= e.x && py >= e.y && px < e.x + e.w && py < e.y + e.h)
+                    .map(|e| e.id.clone()),
+            );
             if let Some(e) = self.element() {
                 self.drag = Some(Drag {
                     before: self.history.document.clone(),
@@ -1047,7 +1102,7 @@ impl Editor {
         self.update(|d| *d = doc)?;
         self.project = path;
         self.saved = self.save_identity();
-        self.selected = None;
+        self.select(None);
         self.layer_offset = 0;
         self.status = "Project opened.".into();
         Ok(())
@@ -1056,13 +1111,13 @@ impl Editor {
         if let Some(i) = id.strip_prefix("template-") {
             let doc = Document::template(i.parse()?);
             self.update(|d| *d = doc)?;
-            self.selected = None;
+            self.select(None);
             self.layer_offset = 0;
             self.status = "Starter opened. Undo returns to your previous design.".into();
             return Ok(());
         }
         if let Some(id) = id.strip_prefix("layer-") {
-            self.selected = Some(id.into());
+            self.select(Some(id.into()));
             self.status = "Layer selected.".into();
             return Ok(());
         }
@@ -1074,7 +1129,7 @@ impl Editor {
             "document-settings" => self.tab = "canvas".into(),
             "blank" => {
                 self.update(|d| *d = Document::blank())?;
-                self.selected = None;
+                self.select(None);
                 self.layer_offset = 0;
             }
             "undo" => {
@@ -1088,10 +1143,14 @@ impl Editor {
                 self.status = "Redone.".into();
             }
             "guides" => self.guides = !self.guides,
-            "layers-up" => self.layer_offset = self.layer_offset.saturating_sub(2),
+            "layers-up" => {
+                self.layer_offset = self.layer_offset.saturating_sub(2);
+                self.follow_selection = false;
+            }
             "layers-down" => {
                 self.layer_offset = (self.layer_offset + 2)
-                    .min(self.history.document.elements.len().saturating_sub(2))
+                    .min(self.history.document.elements.len().saturating_sub(2));
+                self.follow_selection = false;
             }
             "save" | "save-project" => {
                 self.history.document.save(&self.project)?;
@@ -1164,7 +1223,7 @@ impl Editor {
                         kind,
                     })
                 })?;
-                self.selected = Some(copy);
+                self.select(Some(copy));
                 self.tab = "type".into();
                 self.layer_offset = 0;
             }
@@ -1196,7 +1255,7 @@ impl Editor {
                         .max(0.0);
                     let id = copy.id.clone();
                     self.update(|d| d.elements.push(copy))?;
-                    self.selected = Some(id);
+                    self.select(Some(id));
                 }
             }
             "front" | "back" => {
@@ -1343,7 +1402,7 @@ impl Editor {
                     }
                 }
                 "Escape" => {
-                    self.selected = None;
+                    self.select(None);
                     self.focus = None;
                 }
                 "Delete" => self.action("delete")?,

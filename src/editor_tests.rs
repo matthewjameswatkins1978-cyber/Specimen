@@ -469,16 +469,59 @@ fn undo_redo_retains_live_selection_only() {
     assert!(editor.status.contains("Selection cleared"));
 }
 
+/// Layers follow: the selected element scrolls into view, the list
+/// states its visible window, and manual Up/Down scrolling holds its
+/// position until the selection changes again.
+#[test]
+fn layers_follow_selection_and_state_their_window() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("layers-follow.specimen.json");
+    // Template 0 carries 17 elements with `title` third-oldest
+    // (reverse-position 14); at 1440x820 the fitted window holds
+    // 3 layer rows (capacity contract above), so the window
+    // covering the selection reads 13-15.
+    editor.action("layer-title").unwrap();
+    let view = editor.view(1440, 820);
+    let node = view
+        .layout
+        .get("layer-title")
+        .expect("selected layer must scroll into view");
+    assert!(!node.clipped_by_parent);
+    let text = view
+        .app
+        .get("layers-position")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(text, "Showing 13-15 of 17");
+    // Manual scroll holds: the selection may leave the window, and
+    // the indicator keeps stating the visible range honestly.
+    editor.action("layers-down").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("layer-title").is_none());
+    let text = view
+        .app
+        .get("layers-position")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(text, "Showing 3-5 of 17");
+    // Reselecting re-arms follow and brings the layer back.
+    editor.action("layer-title").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("layer-title").is_some());
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.
 #[test]
 fn library_capacity_matches_measured_chrome() {
-    assert_eq!(library_capacity(840.0, 2, true), (4, 2));
-    assert_eq!(library_capacity(820.0, 1, true), (5, 1));
-    assert_eq!(library_capacity(680.0, 2, true), (1, 1));
-    assert_eq!(library_capacity(940.0, 2, true), (7, 2));
-    assert_eq!(library_capacity(680.0, 0, false), (5, 0));
+    assert_eq!(library_capacity(840.0, 2, true), (3, 2));
+    assert_eq!(library_capacity(820.0, 1, true), (4, 1));
+    assert_eq!(library_capacity(680.0, 2, true), (2, 0));
+    assert_eq!(library_capacity(940.0, 2, true), (6, 2));
+    assert_eq!(library_capacity(680.0, 0, false), (3, 0));
 }
 
 /// Seeded-workspace regression for the clipped recovery entry: with
