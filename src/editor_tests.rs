@@ -857,6 +857,34 @@ fn header_names_unsaved_work() {
     assert!(title_of(&editor).ends_with(" · unsaved"));
 }
 
+/// Autosave recovery surfaces only when relevant: for a never-saved
+/// project it is all there is; once saved, only a newer recovery
+/// (a dirty close elsewhere) brings the entry back.
+#[test]
+fn autosave_recovery_surfaces_only_when_relevant() {
+    use crate::editor::recovery_matters;
+    let fixture = Fixture::new();
+    let old = fixture.directory.join("recovery-1.specimen.json");
+    std::fs::write(&old, "{}").unwrap();
+    let mut editor = fixture.editor("project.specimen.json");
+    // Never saved: the recovery is all there is.
+    assert!(recovery_matters(&editor.project, &old));
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("saved-recovery").is_some());
+    // After saving, the project is newer than any recovery: hidden.
+    editor.action("save").unwrap();
+    assert!(!recovery_matters(&editor.project, &old));
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("saved-recovery").is_none());
+    // A newer recovery (a dirty close elsewhere) resurfaces it.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let fresh = fixture.directory.join("recovery-9.specimen.json");
+    std::fs::write(&fresh, "{}").unwrap();
+    assert!(recovery_matters(&editor.project, &fresh));
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("saved-recovery").is_some());
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.

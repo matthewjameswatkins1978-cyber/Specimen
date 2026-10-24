@@ -166,6 +166,19 @@ pub(crate) fn clamp_pan(pan: (f32, f32), paper_w: f32, paper_h: f32) -> (f32, f3
         pan.1.clamp(-paper_h / 2.0, paper_h / 2.0),
     )
 }
+/// An autosave recovery matters when it is newer than the project,
+/// or when the project was never saved and the recovery is all there
+/// is. Otherwise the project already contains that work and the entry
+/// would be permanent clutter.
+pub(crate) fn recovery_matters(project: &std::path::Path, recovery: &std::path::Path) -> bool {
+    let project_time = std::fs::metadata(project).and_then(|m| m.modified());
+    let recovery_time = std::fs::metadata(recovery).and_then(|m| m.modified());
+    match (project_time, recovery_time) {
+        (Ok(p), Ok(r)) => r > p,
+        (Err(_), Ok(_)) => true,
+        _ => false,
+    }
+}
 pub(crate) fn library_capacity(
     panel_h: f32,
     saved_available: usize,
@@ -552,7 +565,13 @@ impl Editor {
                                     .and_then(|m| m.modified())
                                     .unwrap_or(std::time::UNIX_EPOCH)
                             });
-                            let recovery_latest = recovery.into_iter().next_back();
+                            // Surface recovery only when it matters: a
+                            // recovery newer than the project, or any
+                            // recovery for a never-saved project.
+                            let recovery_latest = recovery
+                                .into_iter()
+                                .next_back()
+                                .filter(|p| recovery_matters(&self.project, p));
                             // Fit measured chrome in the fixed panel: shed
                             // saved rows before layer rows so the recovery
                             // entry is never the clipped casualty.
