@@ -112,6 +112,44 @@ fn row(s: &mut b::Scope, id: &str, height: f32, kids: impl FnOnce(&mut b::Scope)
         kids,
     );
 }
+/// Library capacity: the (layer rows, saved rows) that fit the fixed
+/// library panel without clipping. All heights are measured chrome
+/// (panel pad 12, gap 8): title 22, three template cards 3 * (84 + 22),
+/// blank 36, layers heading 36, layer rows 28, section labels 22,
+/// saved/recovery rows 30. Short panels shed saved rows before layer
+/// rows (minimum 1); the latest autosave recovery always stays visible.
+pub(crate) fn library_capacity(
+    panel_h: f32,
+    saved_available: usize,
+    has_recovery: bool,
+) -> (usize, usize) {
+    fn fits(panel_h: f32, layers: usize, saved: usize, has_recovery: bool) -> bool {
+        let sections = if saved > 0 {
+            22.0 + 30.0 * saved as f32
+        } else {
+            0.0
+        } + if has_recovery { 22.0 + 30.0 } else { 0.0 };
+        let kids = 9.0
+            + layers as f32
+            + if saved > 0 { 1.0 + saved as f32 } else { 0.0 }
+            + if has_recovery { 2.0 } else { 0.0 };
+        24.0 + 412.0 + 28.0 * layers as f32 + sections + 8.0 * (kids - 1.0) <= panel_h
+    }
+    let saved_available = saved_available.min(2);
+    for layers in (1..=8).rev() {
+        if fits(panel_h, layers, saved_available, has_recovery) {
+            return (layers, saved_available);
+        }
+    }
+    for saved in (0..saved_available).rev() {
+        for layers in (1..=8).rev() {
+            if fits(panel_h, layers, saved, has_recovery) {
+                return (layers, saved);
+            }
+        }
+    }
+    (1, 0)
+}
 impl Editor {
     pub fn new(project: PathBuf) -> Result<Self> {
         let doc = Document::template(0);
@@ -335,30 +373,9 @@ impl Editor {
                                 button(s, "layers-up", "Up", false);
                                 button(s, "layers-down", "Down", false);
                             });
-                            let rows = ((height.saturating_sub(760)) / 36).clamp(2, 8) as usize;
-                            for (n, e) in self
-                                .history
-                                .document
-                                .elements
-                                .iter()
-                                .enumerate()
-                                .rev()
-                                .skip(self.layer_offset)
-                                .take(rows)
-                            {
-                                let id = format!("layer-{}", e.id);
-                                let name = if self.selected.as_ref() == Some(&e.id) {
-                                    format!("> {}", e.name)
-                                } else {
-                                    e.name.clone()
-                                };
-                                button(s, &id, &name, self.selected.as_ref() == Some(&e.id));
-                                if let Some(c) = s.app.get_mut(&id) {
-                                    c.props.insert("h".into(), "28".into());
-                                    c.props.insert("element_index".into(), n.to_string());
-                                }
-                            }
-                            b::spacer(s, "library-space");
+                            // Library inventory first: the layer list must
+                            // yield space to saved projects and autosave
+                            // recovery so nothing spills past the panel.
                             let saved = self.project.parent().unwrap_or(std::path::Path::new("."));
                             let mut projects = std::fs::read_dir(saved)
                                 .into_iter()
@@ -385,8 +402,49 @@ impl Editor {
                                         n == "recovery.specimen.json" || n.starts_with("recovery-")
                                     })
                                 });
+                            // Most recent autosave only, by file
+                            // modification time: older recovery files stay
+                            // on disk but don't crowd the list.
+                            let mut recovery = recovery;
+                            recovery.sort_by_key(|p| {
+                                std::fs::metadata(p)
+                                    .and_then(|m| m.modified())
+                                    .unwrap_or(std::time::UNIX_EPOCH)
+                            });
+                            let recovery_latest = recovery.into_iter().next_back();
+                            // Fit measured chrome in the fixed panel: shed
+                            // saved rows before layer rows so the recovery
+                            // entry is never the clipped casualty.
+                            let (rows, saved_shown) = library_capacity(
+                                height.saturating_sub(140) as f32,
+                                projects.len(),
+                                recovery_latest.is_some(),
+                            );
+                            for (n, e) in self
+                                .history
+                                .document
+                                .elements
+                                .iter()
+                                .enumerate()
+                                .rev()
+                                .skip(self.layer_offset)
+                                .take(rows)
+                            {
+                                let id = format!("layer-{}", e.id);
+                                let name = if self.selected.as_ref() == Some(&e.id) {
+                                    format!("> {}", e.name)
+                                } else {
+                                    e.name.clone()
+                                };
+                                button(s, &id, &name, self.selected.as_ref() == Some(&e.id));
+                                if let Some(c) = s.app.get_mut(&id) {
+                                    c.props.insert("h".into(), "28".into());
+                                    c.props.insert("element_index".into(), n.to_string());
+                                }
+                            }
+                            b::spacer(s, "library-space");
                             label(s, "saved-section", "SAVED PROJECTS");
-                            for (i, p) in projects.into_iter().take(2).enumerate() {
+                            for (i, p) in projects.into_iter().take(saved_shown).enumerate() {
                                 let id = format!("saved-{i}");
                                 // Display the project stem: the full
                                 // filename is kept in project_path.
@@ -404,16 +462,7 @@ impl Editor {
                                     c.props.insert("h".into(), "30".into());
                                 }
                             }
-                            // Most recent autosave only, by file
-                            // modification time: older recovery files stay
-                            // on disk but don't crowd the list.
-                            let mut recovery = recovery;
-                            recovery.sort_by_key(|p| {
-                                std::fs::metadata(p)
-                                    .and_then(|m| m.modified())
-                                    .unwrap_or(std::time::UNIX_EPOCH)
-                            });
-                            if let Some(p) = recovery.into_iter().next_back() {
+                            if let Some(p) = recovery_latest {
                                 label(s, "recovery-section", "AUTOSAVE RECOVERY");
                                 button(s, "saved-recovery", "Recovered work", false);
                                 if let Some(c) = s.app.get_mut("saved-recovery") {
@@ -798,6 +847,15 @@ impl Editor {
             }
         })
     }
+    /// Keep the selection across undo/redo when the element still exists;
+    /// otherwise clear it so the inspector never points at a removed element.
+    fn retain_selection(&mut self) {
+        if let Some(id) = self.selected.clone() {
+            if !self.history.document.elements.iter().any(|e| e.id == id) {
+                self.selected = None;
+            }
+        }
+    }
     pub fn commit_field(&mut self) -> Result<()> {
         let Some(field) = self.active.take() else {
             return Ok(());
@@ -939,7 +997,11 @@ impl Editor {
                     origin: (e.x, e.y),
                 });
             }
-            self.status = "Selected artwork. Drag or use the inspector.".into();
+            self.status = if self.selected.is_some() {
+                "Selected artwork. Drag or use the inspector.".into()
+            } else {
+                "Selection cleared. Click artwork or a layer.".into()
+            };
         } else if let Some(path) = c.props.get("project_path") {
             self.open_path(PathBuf::from(path))?;
         } else if matches!(c.role, Role::Button) {
@@ -1017,12 +1079,12 @@ impl Editor {
             }
             "undo" => {
                 self.history.undo();
-                self.selected = None;
+                self.retain_selection();
                 self.status = "Undone.".into();
             }
             "redo" => {
                 self.history.redo();
-                self.selected = None;
+                self.retain_selection();
                 self.status = "Redone.".into();
             }
             "guides" => self.guides = !self.guides,

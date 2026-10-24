@@ -2,7 +2,7 @@
 //! checks, not the separate-process Eye/Hand acceptance demonstration.
 use crate::{
     document::{Document, Kind},
-    editor::Editor,
+    editor::{library_capacity, Editor},
 };
 use hamesh_core::Role;
 use std::collections::{HashMap, HashSet};
@@ -433,4 +433,169 @@ fn changing_the_project_path_marks_identical_artwork_unsaved() {
     assert!(!editor.dirty());
     assert_eq!(std::fs::read(next).unwrap(), old_bytes);
     assert_eq!(std::fs::read(old_path).unwrap(), old_bytes);
+}
+
+/// Undo/redo keeps a selection that still exists, clears one that is
+/// gone, and reports an empty-canvas click honestly.
+#[test]
+fn undo_redo_retains_live_selection_only() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("undo-select.specimen.json");
+    editor.selected = Some("title".into());
+    enter_field(&mut editor, "x", "64").unwrap();
+    assert!(editor.history.can_undo());
+    editor.action("undo").unwrap();
+    assert_eq!(editor.selected.as_deref(), Some("title"));
+    editor.action("redo").unwrap();
+    assert_eq!(editor.selected.as_deref(), Some("title"));
+    // A template switch drops the old selection; undo cannot revive it.
+    editor.selected = Some("title".into());
+    editor.action("template-1").unwrap();
+    assert_eq!(editor.selected, None);
+    editor.action("undo").unwrap();
+    assert_eq!(editor.selected, None);
+    // Clicking empty canvas clears the selection and says so.
+    editor.selected = Some("title".into());
+    let mut view = editor.view(1440, 980);
+    let empty = (view.paper.x + view.paper.w + 60.0, view.paper.y + 40.0);
+    assert_eq!(
+        editor
+            .press(&mut view, empty.0, empty.1)
+            .unwrap()
+            .as_deref(),
+        Some("canvas")
+    );
+    assert_eq!(editor.selected, None);
+    assert!(editor.status.contains("Selection cleared"));
+}
+
+/// Library capacity contract: fitted (layer rows, saved rows) for
+/// measured panel chrome. Short panels shed saved rows first and
+/// always keep the autosave recovery entry visible.
+#[test]
+fn library_capacity_matches_measured_chrome() {
+    assert_eq!(library_capacity(840.0, 2, true), (4, 2));
+    assert_eq!(library_capacity(820.0, 1, true), (5, 1));
+    assert_eq!(library_capacity(680.0, 2, true), (1, 1));
+    assert_eq!(library_capacity(940.0, 2, true), (7, 2));
+    assert_eq!(library_capacity(680.0, 0, false), (5, 0));
+}
+
+/// Seeded-workspace regression for the clipped recovery entry: with
+/// three saved projects and two autosave files on disk, every enabled
+/// control must stay unclipped inside the viewport at supported sizes,
+/// the latest recovery must stay reachable, and the visible library
+/// rows must match the fitted capacity.
+#[test]
+fn library_with_saved_and_recovery_projects_stays_unclipped() {
+    let fixture = Fixture::new();
+    for name in [
+        "alpha.specimen.json",
+        "beta.specimen.json",
+        "gamma.specimen.json",
+        "recovery-1.specimen.json",
+        "recovery-2.specimen.json",
+    ] {
+        std::fs::write(fixture.directory.join(name), "{}").unwrap();
+    }
+    let mut editor = fixture.editor("library.specimen.json");
+    let mut failures = Vec::new();
+    for (width, height) in [(1100, 820), (1440, 960), (1440, 980), (1920, 1080)] {
+        for selection in [None, Some("title")] {
+            editor.selected = selection.map(str::to_string);
+            for tab in ["type", "layout", "canvas"] {
+                editor.tab = tab.into();
+                let view = editor.view(width, height);
+                let context = format!("{width}x{height} selection={selection:?} tab={tab}");
+                let (rows, saved_shown) = library_capacity(height as f32 - 140.0, 3, true);
+                for i in 0..saved_shown {
+                    let id = format!("saved-{i}");
+                    if view.layout.get(&id).is_none() {
+                        failures.push(format!("{context}: expected library entry {id}"));
+                    }
+                }
+                if view.layout.get("saved-recovery").is_none() {
+                    failures.push(format!("{context}: recovery entry must stay visible"));
+                }
+                let layers = view
+                    .app
+                    .components
+                    .keys()
+                    .filter(|id| id.starts_with("layer-"))
+                    .count();
+                if layers != rows {
+                    failures.push(format!(
+                        "{context}: {layers} layer rows, capacity says {rows}"
+                    ));
+                }
+                for (id, component) in &view.app.components {
+                    if !matches!(component.role, Role::Button | Role::TextInput) {
+                        continue;
+                    }
+                    if !component.enabled {
+                        continue;
+                    }
+                    let node = view.layout.get(id).expect("Eye geometry");
+                    let r = &node.rect;
+                    if !node.effectively_visible
+                        || node.clipped_by_parent
+                        || r.x < -0.5
+                        || r.y < -0.5
+                        || r.x + r.w > width as f32 + 0.5
+                        || r.y + r.h > height as f32 + 0.5
+                    {
+                        failures.push(format!("{context}: {id} clipped/outside: {r:?}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} library failures:\n{}",
+        failures.len(),
+        failures.into_iter().take(60).collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// Frame budget: time one full view()+render() cycle (the work a resize
+/// or drag frame performs) at the default window size. Report-only; the
+/// numbers are the responsiveness baseline for HAMESH 031.
+#[test]
+fn frame_budget_view_and_render_at_default_size() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("frame-budget.specimen.json");
+    editor.selected = Some("title".into());
+    // Warm-up: font discovery and first layout fall outside the frame budget.
+    let view = editor.view(1440, 980);
+    let _ = editor.render(&view).unwrap();
+    // Resize sweep: one full view()+render() cycle per size, i.e. the work
+    // a live resize frame performs at that window size.
+    for (width, height) in [(1100, 820), (1440, 960), (1440, 980), (1920, 1080)] {
+        let start = std::time::Instant::now();
+        let view = editor.view(width, height);
+        let view_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let start = std::time::Instant::now();
+        let pix = editor.render(&view).unwrap();
+        let render_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!((pix.width(), pix.height()), (width, height));
+        println!(
+            "[frame] {width}x{height}: view={view_ms:.1}ms render={render_ms:.1}ms total={:.1}ms",
+            view_ms + render_ms
+        );
+    }
+    // Component split: chrome raster vs artwork raster vs fingerprint.
+    let start = std::time::Instant::now();
+    let chrome = hamesh_render::render(&view.scene);
+    let chrome_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let _ = chrome.pixmap;
+    let start = std::time::Instant::now();
+    let _ = crate::artwork::render(&editor.history.document).unwrap();
+    let art_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let start = std::time::Instant::now();
+    let _ = editor.fingerprint();
+    let fp_ms = start.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "[frame] split at 1440x980: chrome={chrome_ms:.1}ms artwork={art_ms:.1}ms fingerprint={fp_ms:.1}ms",
+    );
 }
