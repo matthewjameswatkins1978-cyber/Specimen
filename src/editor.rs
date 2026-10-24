@@ -396,13 +396,16 @@ impl Editor {
             s.leaf(c);
         });
     }
-    pub fn view(&self, width: u32, height: u32) -> View {
+    pub fn view(&mut self, width: u32, height: u32) -> View {
         let mut app = App::new("specimen");
         app.get_mut("specimen").unwrap().props.extend([
             ("pad".into(), "0".into()),
             ("gap".into(), "0".into()),
             ("surface".into(), "bg".into()),
         ]);
+        // The displayed layer window commits at the end of view();
+        // the library panel closure reports it through here.
+        let mut shown_start = 0;
         {
             let mut root = b::Scope::root(&mut app, "specimen");
             row(&mut root, "header", 62.0, |s| {
@@ -612,6 +615,7 @@ impl Editor {
                             } else {
                                 format!("Showing {}-{} of {}", start + 1, end, total)
                             };
+                            shown_start = start;
                             label(s, "layers-position", &position);
                             for (n, e) in self
                                 .history
@@ -858,8 +862,10 @@ impl Editor {
                                 button(s, "document-settings", "Document settings", false);
                             }
                             b::spacer(s, "inspector-space");
+                            // Field help only: undo/redo stay discoverable
+                            // through the toolbar buttons. A second hint row
+                            // spills past short inspectors onto the footer.
                             label(s, "commit-hint", "Enter applies / Esc cancels");
-                            label(s, "undo-hint", "Ctrl+Z undo / Ctrl+Shift+Z redo");
                         },
                     );
                 },
@@ -1042,6 +1048,10 @@ impl Editor {
             );
         }
         let scene = hamesh_scene::build(&app, &layout, self.revision);
+        // Commit the displayed window: paging acts on what is shown,
+        // not a stale stored offset. Selection-follow re-arms only on
+        // selection change; every other path re-derives the same start.
+        self.layer_offset = shown_start;
         View {
             app,
             layout,

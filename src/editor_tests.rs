@@ -494,9 +494,11 @@ fn layers_follow_selection_and_state_their_window() {
         .cloned()
         .unwrap_or_default();
     assert_eq!(text, "Showing 13-15 of 17");
-    // Manual scroll holds: the selection may leave the window, and
-    // the indicator keeps stating the visible range honestly.
-    editor.action("layers-down").unwrap();
+    // Manual scroll holds its position and is never yanked back:
+    // paging up shows the layers above while the indicator stays
+    // honest, even as the selection leaves the window.
+    editor.action("layers-up").unwrap();
+    assert_eq!(editor.layer_offset, 10);
     let view = editor.view(1440, 820);
     assert!(view.layout.get("layer-title").is_none());
     let text = view
@@ -505,9 +507,41 @@ fn layers_follow_selection_and_state_their_window() {
         .and_then(|c| c.props.get("text"))
         .cloned()
         .unwrap_or_default();
-    assert_eq!(text, "Showing 3-5 of 17");
-    // Reselecting re-arms follow and brings the layer back.
+    assert_eq!(text, "Showing 11-13 of 17");
+    // Reselecting re-arms follow and brings the layer back: without
+    // the re-arm, offset 10 would keep showing 11-13.
     editor.action("layer-title").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("layer-title").is_some());
+}
+
+/// Continuous scrolling: paging acts on the displayed window, not
+/// a stale offset, so Down never snaps back after selection-follow.
+#[test]
+fn layer_paging_continues_from_the_displayed_window() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("layer-paging.specimen.json");
+    // Title sits at reverse-position 14; at 1440x820 the window
+    // holds 3 rows, so follow displays 13-15 and commits offset 12.
+    editor.action("layer-title").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("layer-title").is_some());
+    assert_eq!(editor.layer_offset, 12);
+    // Down pages from the displayed window: 14, showing 15-17.
+    // A stale offset would snap back to 2 and show 3-5.
+    editor.action("layers-down").unwrap();
+    assert_eq!(editor.layer_offset, 14);
+    let view = editor.view(1440, 820);
+    let text = view
+        .app
+        .get("layers-position")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(text, "Showing 15-17 of 17");
+    // Up pages back onto the selection.
+    editor.action("layers-up").unwrap();
+    assert_eq!(editor.layer_offset, 12);
     let view = editor.view(1440, 820);
     assert!(view.layout.get("layer-title").is_some());
 }
@@ -573,7 +607,7 @@ fn inspector_separates_levels_and_states_alignment() {
 #[test]
 fn toolbar_groups_and_zoom_readout() {
     let fixture = Fixture::new();
-    let editor = fixture.editor("toolbar-zoom.specimen.json");
+    let mut editor = fixture.editor("toolbar-zoom.specimen.json");
     let view = editor.view(1440, 980);
     // The mode label is gone; fixed air separates the groups.
     assert!(view.layout.get("toolbar-name").is_none());
@@ -838,7 +872,7 @@ fn library_collapse_hands_room_to_layers() {
 fn header_names_unsaved_work() {
     let fixture = Fixture::new();
     let mut editor = fixture.editor("header-dirty.specimen.json");
-    let title_of = |editor: &Editor| {
+    let title_of = |editor: &mut Editor| {
         editor
             .view(1440, 980)
             .app
@@ -848,13 +882,13 @@ fn header_names_unsaved_work() {
             .unwrap_or_default()
     };
     // Fresh, never-saved documents read as unsaved.
-    assert!(title_of(&editor).ends_with(" · unsaved"));
+    assert!(title_of(&mut editor).ends_with(" · unsaved"));
     editor.action("save").unwrap();
-    assert_eq!(title_of(&editor), editor.history.document.title);
+    assert_eq!(title_of(&mut editor), editor.history.document.title);
     // Editing dirties it again.
     editor.selected = Some("title".into());
     enter_field(&mut editor, "x", "64").unwrap();
-    assert!(title_of(&editor).ends_with(" · unsaved"));
+    assert!(title_of(&mut editor).ends_with(" · unsaved"));
 }
 
 /// Autosave recovery surfaces only when relevant: for a never-saved
@@ -899,11 +933,11 @@ fn library_capacity_matches_measured_chrome() {
     assert_eq!(library_capacity(840.0, 0, false, false), (8, 0));
 }
 
-/// Seeded-workspace regression for the clipped recovery entry: with
-/// three saved projects and two autosave files on disk, every enabled
-/// control must stay unclipped inside the viewport at supported sizes,
-/// the latest recovery must stay reachable, and the visible library
-/// rows must match the fitted capacity.
+/// Seeded-workspace regression for clipped chrome: with three saved
+/// projects and two autosave files on disk, every enabled control and
+/// every visible label must stay unclipped inside the viewport at
+/// supported sizes, the latest recovery must stay reachable, and the
+/// visible library rows must match the fitted capacity.
 #[test]
 fn library_with_saved_and_recovery_projects_stays_unclipped() {
     let fixture = Fixture::new();
@@ -963,6 +997,25 @@ fn library_with_saved_and_recovery_projects_stays_unclipped() {
                         || r.y + r.h > height as f32 + 0.5
                     {
                         failures.push(format!("{context}: {id} clipped/outside: {r:?}"));
+                    }
+                }
+                // Labels paint too: no visible text may spill past its
+                // panel either (the footer-overlap class). Artwork ghost
+                // nodes keep document-bounds clipping semantics.
+                for (id, component) in &view.app.components {
+                    if !matches!(component.role, Role::Text) {
+                        continue;
+                    }
+                    let node = view.layout.get(id).expect("Eye geometry");
+                    let r = &node.rect;
+                    if !node.effectively_visible
+                        || node.clipped_by_parent
+                        || r.x < -0.5
+                        || r.y < -0.5
+                        || r.x + r.w > width as f32 + 0.5
+                        || r.y + r.h > height as f32 + 0.5
+                    {
+                        failures.push(format!("{context}: text {id} clipped/outside: {r:?}"));
                     }
                 }
             }

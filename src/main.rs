@@ -51,7 +51,7 @@ struct Host {
     inspect: bool,
 }
 impl Host {
-    fn view(&self) -> editor::View {
+    fn view(&mut self) -> editor::View {
         self.editor.view(self.size.0, self.size.1)
     }
     fn ok(&self, mut v: serde_json::Value) -> OpOutcome {
@@ -416,7 +416,7 @@ impl ApplicationHandler<UserEvent> for Host {
         }
         let attrs = Window::default_attributes()
             .with_title("Specimen - Typography & composition")
-            .with_inner_size(PhysicalSize::new(1440, 980))
+            .with_inner_size(PhysicalSize::new(self.size.0, self.size.1))
             .with_min_inner_size(PhysicalSize::new(1100, 820));
         let window = Arc::new(event_loop.create_window(attrs).expect("native window"));
         window.set_ime_allowed(true);
@@ -605,7 +605,7 @@ impl ApplicationHandler<UserEvent> for Host {
 fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("Specimen - native Hamesh typography studio\n\nUsage: specimen [--project=PATH] [--evidence-dir=DIR] [--smoke-test=SECONDS] [--no-inspect]\n       specimen --render PROJECT OUTPUT.png\n       specimen --render-template=N OUTPUT.png\n       specimen --check PROJECT\n       specimen --fonts\n\nEye/Hand: hamesh map | detail ID | click ID | type FIELD TEXT | key Enter | snapshot PATH\nKeyboard: Ctrl+S save, Ctrl+O open current path, Ctrl+E export, Ctrl+Z undo, Ctrl+Shift+Z redo.\nInspector fields: click/type to replace; Enter applies; Escape cancels. Canvas tab sets file path.\nDirect --render/--check commands are document operations, not GUI evidence.");
+        println!("Specimen - native Hamesh typography studio\n\nUsage: specimen [--project=PATH] [--evidence-dir=DIR] [--smoke-test=SECONDS] [--window-size=WxH] [--no-inspect]\n       specimen --render PROJECT OUTPUT.png\n       specimen --render-template=N OUTPUT.png\n       specimen --check PROJECT\n       specimen --fonts\n\nEye/Hand: hamesh map | detail ID | click ID | type FIELD TEXT | key Enter | snapshot PATH\nKeyboard: Ctrl+S save, Ctrl+O open current path, Ctrl+E export, Ctrl+Z undo, Ctrl+Shift+Z redo.\nInspector fields: click/type to replace; Enter applies; Escape cancels. Canvas tab sets file path.\nDirect --render/--check commands are document operations, not GUI evidence.");
         return Ok(());
     }
     if args.first().map(String::as_str) == Some("--fonts") {
@@ -636,6 +636,7 @@ fn main() -> Result<()> {
         if !(a.starts_with("--project=")
             || a.starts_with("--evidence-dir=")
             || a.starts_with("--smoke-test=")
+            || a.starts_with("--window-size=")
             || a == "--no-inspect"
             || a == "--inspect")
         {
@@ -661,13 +662,23 @@ fn main() -> Result<()> {
         .find_map(|a| a.strip_prefix("--smoke-test="))
         .map(str::parse::<u64>)
         .transpose()?;
+    // Dev-only window size for the evidence matrix (minimums still
+    // enforced by winit): --window-size=1100x820.
+    let win_size: Option<(u32, u32)> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--window-size="))
+        .map(|s| {
+            let (w, h) = s.split_once('x').context("Need WIDTHxHEIGHT")?;
+            Ok::<_, anyhow::Error>((w.parse()?, h.parse()?))
+        })
+        .transpose()?;
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     let mut host = Host {
         editor,
         window: None,
         context: None,
         surface: None,
-        size: (1440, 980),
+        size: win_size.unwrap_or((1440, 980)),
         cursor: (0.0, 0.0),
         modifiers: ModifiersState::empty(),
         proxy: event_loop.create_proxy(),
