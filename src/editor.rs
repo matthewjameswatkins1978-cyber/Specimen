@@ -260,7 +260,7 @@ impl Editor {
         row(s, &format!("row-{field}"), 36.0, |s| {
             let c = Component::new(&format!("label-{field}"), Role::Text, title)
                 .with_prop("text", title)
-                .with_prop("w", "72")
+                .with_prop("w", "92")
                 .with_prop("font_size", "12")
                 .with_prop("text_token", "muted")
                 .with_prop("h", "36");
@@ -580,8 +580,8 @@ impl Editor {
                                 label(s, "document-section", "DOCUMENT");
                                 for (f, l) in [
                                     ("title", "Title"),
-                                    ("canvas_w", "Width"),
-                                    ("canvas_h", "Height"),
+                                    ("canvas_w", "Width (px)"),
+                                    ("canvas_h", "Height (px)"),
                                     ("background", "Paper"),
                                     ("path", "Save path"),
                                 ] {
@@ -597,32 +597,42 @@ impl Editor {
                                             ("text", "Content"),
                                             ("font", "Family"),
                                             ("weight", "Weight"),
-                                            ("size", "Size"),
-                                            ("tracking", "Tracking"),
-                                            ("leading", "Leading"),
+                                            ("size", "Size (px)"),
+                                            ("tracking", "Tracking (px)"),
+                                            ("leading", "Leading (x)"),
                                         ] {
                                             self.field(s, f, l);
                                         }
                                         button(s, "next-font", "Next available font", false);
+                                        // Stateful text alignment: the active
+                                        // option reads selected, so frame-level
+                                        // text alignment cannot be mistaken for
+                                        // the artboard alignment on the Layout tab.
+                                        let text_align = match &e.kind {
+                                            Kind::Text { align, .. } => *align,
+                                            _ => Alignment::Left,
+                                        };
                                         row(s, "alignment", 36.0, |s| {
-                                            for (id, l) in [
-                                                ("align-left", "Left"),
-                                                ("align-center", "Centre"),
-                                                ("align-right", "Right"),
+                                            for (id, l, a) in [
+                                                ("align-left", "Left", Alignment::Left),
+                                                ("align-center", "Centre", Alignment::Center),
+                                                ("align-right", "Right", Alignment::Right),
                                             ] {
-                                                button(s, id, l, false);
+                                                button(s, id, l, text_align == a);
                                             }
                                         });
                                     } else {
                                         label(s, "shape-section", "SHAPE FILL");
                                     }
                                     self.field(s, "color", "Colour");
-                                    self.field(s, "background", "Paper");
                                 } else {
                                     label(s, "geometry-section", "GEOMETRY / DOCUMENT PIXELS");
-                                    for (f, l) in
-                                        [("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height")]
-                                    {
+                                    for (f, l) in [
+                                        ("x", "X (px)"),
+                                        ("y", "Y (px)"),
+                                        ("w", "Width (px)"),
+                                        ("h", "Height (px)"),
+                                    ] {
                                         self.field(s, f, l);
                                     }
                                     label(s, "align-section", "ALIGN TO ARTBOARD");

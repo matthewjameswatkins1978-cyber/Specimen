@@ -512,6 +512,61 @@ fn layers_follow_selection_and_state_their_window() {
     assert!(view.layout.get("layer-title").is_some());
 }
 
+/// Inspector levels: canvas properties stay off the element tabs,
+/// numeric fields state their units, and text alignment shows state.
+#[test]
+fn inspector_separates_levels_and_states_alignment() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("inspector-levels.specimen.json");
+    editor.selected = Some("title".into());
+    // Paper is canvas-level: absent with an element on the Type
+    // tab, present on the Canvas tab.
+    editor.tab = "type".into();
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("field-background").is_none());
+    assert!(view.layout.get("field-color").is_some());
+    editor.tab = "canvas".into();
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("field-background").is_some());
+    // Numeric fields state their units in the label.
+    editor.tab = "type".into();
+    let view = editor.view(1440, 980);
+    for (id, unit) in [
+        ("label-size", "(px)"),
+        ("label-tracking", "(px)"),
+        ("label-leading", "(x)"),
+    ] {
+        let text = view
+            .app
+            .get(id)
+            .and_then(|c| c.props.get("text"))
+            .cloned()
+            .unwrap_or_default();
+        assert!(text.contains(unit), "{id} label {text:?} lacks {unit}");
+    }
+    // The active text alignment reads selected; the others do not.
+    let variant = |id: &str| {
+        view.app
+            .get(id)
+            .and_then(|c| c.props.get("variant"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(variant("align-left"), "primary");
+    assert_eq!(variant("align-center"), "ghost");
+    editor.action("align-center").unwrap();
+    let view = editor.view(1440, 980);
+    let variant = |id: &str| {
+        view.app
+            .get(id)
+            .and_then(|c| c.props.get("variant"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(variant("align-center"), "primary");
+    assert_eq!(variant("align-left"), "ghost");
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.
