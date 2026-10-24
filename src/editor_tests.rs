@@ -738,6 +738,48 @@ fn zoom_actual_centers_true_size_and_pans_with_arrows() {
     assert!((view.scale - fit).abs() < 0.01);
 }
 
+/// Weight quick-set and heading: common weights are one tap with
+/// visible state, and the heading names kind and content.
+#[test]
+fn weight_quickset_and_heading_state_the_selection() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("weight.specimen.json");
+    editor.selected = Some("title".into());
+    editor.tab = "type".into();
+    let view = editor.view(1440, 980);
+    // The heading names kind and content, not the internal id.
+    let heading = view
+        .app
+        .get("inspector-title")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(heading, "Text · AFTER");
+    let variant = |id: &str| {
+        view.app
+            .get(id)
+            .and_then(|c| c.props.get("variant"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(variant("weight-700"), "primary");
+    assert_eq!(variant("weight-400"), "ghost");
+    editor.action("weight-400").unwrap();
+    assert!(matches!(
+        editor.element().map(|e| &e.kind),
+        Some(Kind::Text { weight: 400, .. })
+    ));
+    editor.action("undo").unwrap();
+    assert!(matches!(
+        editor.element().map(|e| &e.kind),
+        Some(Kind::Text { weight: 700, .. })
+    ));
+    // Shapes get no weight row.
+    editor.selected = Some("orbit-lime".into());
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("weight-400").is_none());
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.

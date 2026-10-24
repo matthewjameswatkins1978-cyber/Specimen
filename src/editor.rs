@@ -264,6 +264,25 @@ impl Editor {
         out.truncate(6);
         out
     }
+    /// Human-friendly inspector heading: what the selection is and,
+    /// for text, its content — never a bare internal identifier.
+    fn inspector_title(&self) -> String {
+        match self.element() {
+            Some(e) => match &e.kind {
+                Kind::Text { text, .. } => {
+                    let first = text.lines().next().unwrap_or("").trim();
+                    let short: String = first.chars().take(24).collect();
+                    if short.is_empty() {
+                        "Text".into()
+                    } else {
+                        format!("Text · {short}")
+                    }
+                }
+                _ => e.name.clone(),
+            },
+            None => "Artwork".into(),
+        }
+    }
     pub fn element(&self) -> Option<&Element> {
         let id = self.selected.as_ref()?;
         self.history.document.elements.iter().find(|e| &e.id == id)
@@ -634,11 +653,7 @@ impl Editor {
                         Some(height.saturating_sub(140) as f32),
                         "window",
                         |s| {
-                            b::heading(
-                                s,
-                                "inspector-title",
-                                self.element().map(|e| e.name.as_str()).unwrap_or("Artwork"),
-                            );
+                            b::heading(s, "inspector-title", &self.inspector_title());
                             row(s, "inspector-tabs", 36.0, |s| {
                                 for (id, name) in
                                     [("type", "Type"), ("layout", "Layout"), ("canvas", "Canvas")]
@@ -667,6 +682,27 @@ impl Editor {
                                             ("text", "Content"),
                                             ("font", "Family"),
                                             ("weight", "Weight"),
+                                        ] {
+                                            self.field(s, f, l);
+                                        }
+                                        // Common weights as one-tap choices with
+                                        // visible state; the numeric field stays
+                                        // for exact values.
+                                        row(s, "weight-quick", 36.0, |s| {
+                                            let current = match &e.kind {
+                                                Kind::Text { weight, .. } => *weight,
+                                                _ => 0,
+                                            };
+                                            for (id, w) in [
+                                                ("weight-400", 400u16),
+                                                ("weight-500", 500u16),
+                                                ("weight-600", 600u16),
+                                                ("weight-700", 700u16),
+                                            ] {
+                                                button(s, id, &w.to_string(), current == w);
+                                            }
+                                        });
+                                        for (f, l) in [
                                             ("size", "Size (px)"),
                                             ("tracking", "Tracking (px)"),
                                             ("leading", "Leading (x)"),
@@ -1348,6 +1384,19 @@ impl Editor {
         if let Some(id) = id.strip_prefix("layer-") {
             self.select(Some(id.into()));
             self.status = "Layer selected.".into();
+            return Ok(());
+        }
+        if let Some(w) = id.strip_prefix("weight-") {
+            let v: u16 = w.parse()?;
+            if !(1..=1000).contains(&v) {
+                bail!("Weight {v} is outside 1-1000");
+            }
+            self.selected_update(|e| {
+                if let Kind::Text { weight, .. } = &mut e.kind {
+                    *weight = v;
+                }
+            })?;
+            self.status = format!("Weight {v}.");
             return Ok(());
         }
         if let Some(i) = id.strip_prefix("swatch-") {
