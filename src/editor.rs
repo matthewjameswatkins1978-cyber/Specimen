@@ -24,6 +24,16 @@ struct Drag {
     start: (f32, f32),
     origin: (f32, f32),
 }
+/// Canvas zoom: whole artboard, or the selection fitted to the
+/// canvas. Selection zoom reuses the paper transform, so hit-testing,
+/// drag and the Eye stay consistent; paper-space paint is clipped
+/// to the canvas area whenever it overflows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Zoom {
+    Fit,
+    Selected,
+    Actual,
+}
 pub struct Editor {
     pub history: History,
     pub selected: Option<String>,
@@ -34,6 +44,16 @@ pub struct Editor {
     pub tab: String,
     pub guides: bool,
     pub layer_offset: usize,
+    zoom: Zoom,
+    /// Screen-pixel pan for Actual-size zoom. Clamped so the
+    /// canvas center never leaves the paper.
+    pan: (f32, f32),
+    /// When true, the layer list scrolls to keep the selection visible.
+    /// Manual Up/Down scrolling clears it until the selection changes.
+    follow_selection: bool,
+    /// Design-library browser open: template cards show. Collapsed,
+    /// the room goes to layers and saved projects instead.
+    library_open: bool,
     pub composer: Composer,
     pub active: Option<String>,
     select_all: bool,
@@ -71,6 +91,15 @@ fn panel(
         c
     };
     s.branch(c, kids);
+}
+/// Fixed air between toolbar groups: a ghost holds the width,
+/// paints nothing and never intercepts the Hand.
+fn strut(s: &mut b::Scope, id: &str, width: f32) {
+    s.leaf(
+        Component::new(id, Role::Panel, id)
+            .with_prop("ghost", "true")
+            .with_prop("w", &width.to_string()),
+    );
 }
 fn button(s: &mut b::Scope, id: &str, label: &str, primary: bool) {
     b::button(
@@ -114,36 +143,82 @@ fn row(s: &mut b::Scope, id: &str, height: f32, kids: impl FnOnce(&mut b::Scope)
 }
 /// Library capacity: the (layer rows, saved rows) that fit the fixed
 /// library panel without clipping. All heights are measured chrome
-/// (panel pad 12, gap 8): title 22, three template cards 3 * (84 + 22),
-/// blank 36, layers heading 36, layer rows 28, section labels 22,
-/// saved/recovery rows 30. Short panels shed saved rows before layer
-/// rows (minimum 1); the latest autosave recovery always stays visible.
+/// (panel pad 12, gap 8). Expanded: heading row 36, three template
+/// cards 3 * (84 + 22), blank 36, layers heading 36, position
+/// caption 22. Collapsed: heading row 36, blank 36, layers heading
+/// 36, position caption 22. Both add layer rows 28, section labels
+/// 22, saved/recovery rows 30, plus one spacer kid. Short panels shed
+/// saved rows before layer rows (minimum 1); the latest autosave
+/// recovery always stays visible. The saved header only renders
+/// when saved rows fit.
+/// Largest scale that fits the element box in the canvas area,
+/// clamped so tiny elements cannot blow navigation up.
+pub(crate) fn selection_scale(area_w: f32, area_h: f32, e: &Element) -> f32 {
+    ((area_w - 40.0) / e.w.max(0.01))
+        .min((area_h - 32.0) / e.h.max(0.01))
+        .clamp(0.01, 8.0)
+}
+/// Pan bounds in screen pixels: the canvas center must stay on
+/// the paper, so panning can never lose the artwork.
+pub(crate) fn clamp_pan(pan: (f32, f32), paper_w: f32, paper_h: f32) -> (f32, f32) {
+    (
+        pan.0.clamp(-paper_w / 2.0, paper_w / 2.0),
+        pan.1.clamp(-paper_h / 2.0, paper_h / 2.0),
+    )
+}
+/// An autosave recovery matters when it is newer than the project,
+/// or when the project was never saved and the recovery is all there
+/// is. Otherwise the project already contains that work and the entry
+/// would be permanent clutter.
+pub(crate) fn recovery_matters(project: &std::path::Path, recovery: &std::path::Path) -> bool {
+    let project_time = std::fs::metadata(project).and_then(|m| m.modified());
+    let recovery_time = std::fs::metadata(recovery).and_then(|m| m.modified());
+    match (project_time, recovery_time) {
+        (Ok(p), Ok(r)) => r > p,
+        (Err(_), Ok(_)) => true,
+        _ => false,
+    }
+}
 pub(crate) fn library_capacity(
     panel_h: f32,
     saved_available: usize,
     has_recovery: bool,
+    expanded: bool,
 ) -> (usize, usize) {
-    fn fits(panel_h: f32, layers: usize, saved: usize, has_recovery: bool) -> bool {
+    // Measured fixed chrome per library mode, plus one spacer kid.
+    let (fixed, base) = if expanded {
+        (448.0, 11.0)
+    } else {
+        (130.0, 5.0)
+    };
+    fn fits(
+        panel_h: f32,
+        fixed: f32,
+        base: f32,
+        layers: usize,
+        saved: usize,
+        has_recovery: bool,
+    ) -> bool {
         let sections = if saved > 0 {
             22.0 + 30.0 * saved as f32
         } else {
             0.0
         } + if has_recovery { 22.0 + 30.0 } else { 0.0 };
-        let kids = 9.0
+        let kids = base
             + layers as f32
             + if saved > 0 { 1.0 + saved as f32 } else { 0.0 }
             + if has_recovery { 2.0 } else { 0.0 };
-        24.0 + 412.0 + 28.0 * layers as f32 + sections + 8.0 * (kids - 1.0) <= panel_h
+        24.0 + fixed + 28.0 * layers as f32 + sections + 8.0 * (kids - 1.0) <= panel_h
     }
     let saved_available = saved_available.min(2);
     for layers in (1..=8).rev() {
-        if fits(panel_h, layers, saved_available, has_recovery) {
+        if fits(panel_h, fixed, base, layers, saved_available, has_recovery) {
             return (layers, saved_available);
         }
     }
     for saved in (0..saved_available).rev() {
         for layers in (1..=8).rev() {
-            if fits(panel_h, layers, saved, has_recovery) {
+            if fits(panel_h, fixed, base, layers, saved, has_recovery) {
                 return (layers, saved);
             }
         }
@@ -166,6 +241,10 @@ impl Editor {
             tab: "type".into(),
             guides: true,
             layer_offset: 0,
+            follow_selection: true,
+            library_open: true,
+            zoom: Zoom::Fit,
+            pan: (0.0, 0.0),
             composer: Composer::new(),
             active: None,
             select_all: false,
@@ -200,6 +279,40 @@ impl Editor {
             format!("{name}.png")
         };
         self.project.with_file_name(name)
+    }
+    /// Document palette in encounter order: canvas paper first,
+    /// then each element colour once, capped so the swatch row
+    /// fits the inspector. A swatch paints the selection, keeping
+    /// the artwork inside its own palette unless the hex field
+    /// says otherwise.
+    pub fn palette(&self) -> Vec<String> {
+        let mut out = vec![self.history.document.background.clone()];
+        for e in &self.history.document.elements {
+            if !out.iter().any(|c| c.eq_ignore_ascii_case(&e.color)) {
+                out.push(e.color.clone());
+            }
+        }
+        out.truncate(6);
+        out
+    }
+    /// Human-friendly inspector heading: what the selection is and,
+    /// for text, its content — never a bare internal identifier.
+    fn inspector_title(&self) -> String {
+        match self.element() {
+            Some(e) => match &e.kind {
+                Kind::Text { text, .. } => {
+                    let first = text.lines().next().unwrap_or("").trim();
+                    let short: String = first.chars().take(24).collect();
+                    if short.is_empty() {
+                        "Text".into()
+                    } else {
+                        format!("Text · {short}")
+                    }
+                }
+                _ => e.name.clone(),
+            },
+            None => "Artwork".into(),
+        }
     }
     pub fn element(&self) -> Option<&Element> {
         let id = self.selected.as_ref()?;
@@ -252,7 +365,7 @@ impl Editor {
         row(s, &format!("row-{field}"), 36.0, |s| {
             let c = Component::new(&format!("label-{field}"), Role::Text, title)
                 .with_prop("text", title)
-                .with_prop("w", "72")
+                .with_prop("w", "92")
                 .with_prop("font_size", "12")
                 .with_prop("text_token", "muted")
                 .with_prop("h", "36");
@@ -297,7 +410,14 @@ impl Editor {
                     b::title(s, "brand-title", "Specimen");
                 });
                 panel(s, "project-header", None, Some(62.0), "header", |s| {
-                    b::heading(s, "project-title", &self.history.document.title);
+                    // The header names unsaved work, not just the title:
+                    // dirty state belongs where the eye rests.
+                    let title = if self.dirty() {
+                        format!("{} · unsaved", self.history.document.title)
+                    } else {
+                        self.history.document.title.clone()
+                    };
+                    b::heading(s, "project-title", &title);
                 });
                 b::row(
                     s,
@@ -317,14 +437,29 @@ impl Editor {
                     },
                 );
             });
+            // Draw, history and view read as groups: 16px ghost
+            // struts separate them at twice the standard 8px gap.
+            // The file actions already live in the header, so the
+            // toolbar needs no mode label.
             row(&mut root, "toolbar", 48.0, |s| {
-                label(s, "toolbar-name", "  COMPOSITION STUDIO");
                 b::spacer(s, "toolbar-spacer");
                 button(s, "add-text", "+ Text", false);
                 button(s, "add-rect", "+ Rectangle", false);
                 button(s, "add-ellipse", "+ Ellipse", false);
+                strut(s, "tools-gap", 16.0);
                 button(s, "undo", "Undo", false);
                 button(s, "redo", "Redo", false);
+                strut(s, "history-gap", 16.0);
+                button(
+                    s,
+                    "zoom",
+                    match self.zoom {
+                        Zoom::Fit => "Zoom: Fit",
+                        Zoom::Selected => "Zoom: Selection",
+                        Zoom::Actual => "Zoom: Actual",
+                    },
+                    false,
+                );
                 button(
                     s,
                     "guides",
@@ -353,19 +488,38 @@ impl Editor {
                         Some(height.saturating_sub(140) as f32),
                         "window",
                         |s| {
-                            label(s, "library-title", "DESIGN LIBRARY");
-                            for (i, name) in ["After Frequency", "Neue Form", "Soft Signal"]
-                                .iter()
-                                .enumerate()
-                            {
-                                let id = format!("template-{i}");
-                                button(s, &id, "", false);
-                                if let Some(c) = s.app.get_mut(&id) {
-                                    c.name = format!("Open starter: {name}");
-                                    c.props.insert("h".into(), "84".into());
-                                    c.props.insert("template".into(), i.to_string());
+                            row(s, "library-heading", 36.0, |s| {
+                                label(s, "library-title", "DESIGN LIBRARY");
+                                b::spacer(s, "library-head-space");
+                                button(
+                                    s,
+                                    "library-toggle",
+                                    if self.library_open { "-" } else { "+" },
+                                    false,
+                                );
+                                if let Some(c) = s.app.get_mut("library-toggle") {
+                                    c.name = if self.library_open {
+                                        "Collapse design library"
+                                    } else {
+                                        "Expand design library"
+                                    }
+                                    .into();
                                 }
-                                label(s, &format!("template-title-{i}"), name);
+                            });
+                            if self.library_open {
+                                for (i, name) in ["After Frequency", "Neue Form", "Soft Signal"]
+                                    .iter()
+                                    .enumerate()
+                                {
+                                    let id = format!("template-{i}");
+                                    button(s, &id, "", false);
+                                    if let Some(c) = s.app.get_mut(&id) {
+                                        c.name = format!("Open starter: {name}");
+                                        c.props.insert("h".into(), "84".into());
+                                        c.props.insert("template".into(), i.to_string());
+                                    }
+                                    label(s, &format!("template-title-{i}"), name);
+                                }
                             }
                             button(s, "blank", "New blank canvas", false);
                             row(s, "layers-heading", 36.0, |s| {
@@ -411,7 +565,13 @@ impl Editor {
                                     .and_then(|m| m.modified())
                                     .unwrap_or(std::time::UNIX_EPOCH)
                             });
-                            let recovery_latest = recovery.into_iter().next_back();
+                            // Surface recovery only when it matters: a
+                            // recovery newer than the project, or any
+                            // recovery for a never-saved project.
+                            let recovery_latest = recovery
+                                .into_iter()
+                                .next_back()
+                                .filter(|p| recovery_matters(&self.project, p));
                             // Fit measured chrome in the fixed panel: shed
                             // saved rows before layer rows so the recovery
                             // entry is never the clipped casualty.
@@ -419,7 +579,40 @@ impl Editor {
                                 height.saturating_sub(140) as f32,
                                 projects.len(),
                                 recovery_latest.is_some(),
+                                self.library_open,
                             );
+                            // Selection follow: keep the selected layer
+                            // inside the visible window. Manual Up/Down
+                            // scrolling holds its position until the
+                            // selection changes again.
+                            let total = self.history.document.elements.len();
+                            let max_start = total.saturating_sub(rows.min(total.max(1)));
+                            let mut start = self.layer_offset.min(max_start);
+                            if self.follow_selection {
+                                if let Some(sel) = self.selected.as_deref() {
+                                    if let Some(pos) = self
+                                        .history
+                                        .document
+                                        .elements
+                                        .iter()
+                                        .rev()
+                                        .position(|e| e.id == sel)
+                                    {
+                                        if pos < start {
+                                            start = pos;
+                                        } else if pos >= start + rows {
+                                            start = (pos + 1 - rows).min(max_start);
+                                        }
+                                    }
+                                }
+                            }
+                            let end = (start + rows).min(total);
+                            let position = if total == 0 {
+                                "No layers".to_string()
+                            } else {
+                                format!("Showing {}-{} of {}", start + 1, end, total)
+                            };
+                            label(s, "layers-position", &position);
                             for (n, e) in self
                                 .history
                                 .document
@@ -427,7 +620,7 @@ impl Editor {
                                 .iter()
                                 .enumerate()
                                 .rev()
-                                .skip(self.layer_offset)
+                                .skip(start)
                                 .take(rows)
                             {
                                 let id = format!("layer-{}", e.id);
@@ -443,7 +636,12 @@ impl Editor {
                                 }
                             }
                             b::spacer(s, "library-space");
-                            label(s, "saved-section", "SAVED PROJECTS");
+                            // No empty section header: when no saved
+                            // row fits, the header would promise
+                            // projects the list cannot show.
+                            if saved_shown > 0 {
+                                label(s, "saved-section", "SAVED PROJECTS");
+                            }
                             for (i, p) in projects.into_iter().take(saved_shown).enumerate() {
                                 let id = format!("saved-{i}");
                                 // Display the project stem: the full
@@ -519,11 +717,7 @@ impl Editor {
                         Some(height.saturating_sub(140) as f32),
                         "window",
                         |s| {
-                            b::heading(
-                                s,
-                                "inspector-title",
-                                self.element().map(|e| e.name.as_str()).unwrap_or("Artwork"),
-                            );
+                            b::heading(s, "inspector-title", &self.inspector_title());
                             row(s, "inspector-tabs", 36.0, |s| {
                                 for (id, name) in
                                     [("type", "Type"), ("layout", "Layout"), ("canvas", "Canvas")]
@@ -535,8 +729,8 @@ impl Editor {
                                 label(s, "document-section", "DOCUMENT");
                                 for (f, l) in [
                                     ("title", "Title"),
-                                    ("canvas_w", "Width"),
-                                    ("canvas_h", "Height"),
+                                    ("canvas_w", "Width (px)"),
+                                    ("canvas_h", "Height (px)"),
                                     ("background", "Paper"),
                                     ("path", "Save path"),
                                 ] {
@@ -552,32 +746,75 @@ impl Editor {
                                             ("text", "Content"),
                                             ("font", "Family"),
                                             ("weight", "Weight"),
-                                            ("size", "Size"),
-                                            ("tracking", "Tracking"),
-                                            ("leading", "Leading"),
+                                        ] {
+                                            self.field(s, f, l);
+                                        }
+                                        // Common weights as one-tap choices with
+                                        // visible state; the numeric field stays
+                                        // for exact values.
+                                        row(s, "weight-quick", 36.0, |s| {
+                                            let current = match &e.kind {
+                                                Kind::Text { weight, .. } => *weight,
+                                                _ => 0,
+                                            };
+                                            for (id, w) in [
+                                                ("weight-400", 400u16),
+                                                ("weight-500", 500u16),
+                                                ("weight-600", 600u16),
+                                                ("weight-700", 700u16),
+                                            ] {
+                                                button(s, id, &w.to_string(), current == w);
+                                            }
+                                        });
+                                        for (f, l) in [
+                                            ("size", "Size (px)"),
+                                            ("tracking", "Tracking (px)"),
+                                            ("leading", "Leading (x)"),
                                         ] {
                                             self.field(s, f, l);
                                         }
                                         button(s, "next-font", "Next available font", false);
+                                        // Stateful text alignment: the active
+                                        // option reads selected, so frame-level
+                                        // text alignment cannot be mistaken for
+                                        // the artboard alignment on the Layout tab.
+                                        let text_align = match &e.kind {
+                                            Kind::Text { align, .. } => *align,
+                                            _ => Alignment::Left,
+                                        };
                                         row(s, "alignment", 36.0, |s| {
-                                            for (id, l) in [
-                                                ("align-left", "Left"),
-                                                ("align-center", "Centre"),
-                                                ("align-right", "Right"),
+                                            for (id, l, a) in [
+                                                ("align-left", "Left", Alignment::Left),
+                                                ("align-center", "Centre", Alignment::Center),
+                                                ("align-right", "Right", Alignment::Right),
                                             ] {
-                                                button(s, id, l, false);
+                                                button(s, id, l, text_align == a);
                                             }
                                         });
                                     } else {
                                         label(s, "shape-section", "SHAPE FILL");
                                     }
                                     self.field(s, "color", "Colour");
-                                    self.field(s, "background", "Paper");
+                                    row(s, "palette", 36.0, |s| {
+                                        for (i, hex) in self.palette().iter().enumerate() {
+                                            let id = format!("swatch-{i}");
+                                            button(s, &id, "", false);
+                                            if let Some(c) = s.app.get_mut(&id) {
+                                                c.name = format!("Paint selection {hex}");
+                                                c.props.insert("h".into(), "28".into());
+                                                c.props.insert("w".into(), "30".into());
+                                            }
+                                        }
+                                        b::spacer(s, "palette-space");
+                                    });
                                 } else {
                                     label(s, "geometry-section", "GEOMETRY / DOCUMENT PIXELS");
-                                    for (f, l) in
-                                        [("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height")]
-                                    {
+                                    for (f, l) in [
+                                        ("x", "X (px)"),
+                                        ("y", "Y (px)"),
+                                        ("w", "Width (px)"),
+                                        ("h", "Height (px)"),
+                                    ] {
                                         self.field(s, f, l);
                                     }
                                     label(s, "align-section", "ALIGN TO ARTBOARD");
@@ -652,11 +889,21 @@ impl Editor {
             ("layers-title", 58.0),
             ("layers-up", 44.0),
             ("layers-down", 62.0),
+            ("canvas-title", 130.0),
+            ("canvas-size", 170.0),
             ("status", (width as f32 - 200.0).max(100.0)),
             ("engine-label", 160.0),
         ] {
             if let Some(c) = app.get_mut(id) {
                 c.props.insert("w".into(), w.to_string());
+            }
+        }
+        // Selection headings run longer (element name + zoom): give
+        // the size label room only in that mode, keeping the Fit
+        // heading tight.
+        if matches!(self.zoom, Zoom::Selected) && self.selected.is_some() {
+            if let Some(c) = app.get_mut("canvas-size") {
+                c.props.insert("w".into(), "220".into());
             }
         }
         if let Some(c) = app.get_mut("workspace") {
@@ -681,15 +928,82 @@ impl Editor {
         let mut layout = hamesh_layout::compute(&app, width as f32, height as f32);
         let area = layout.get("canvas").unwrap().rect.clone();
         let d = &self.history.document;
-        let scale = ((area.w - 40.0) / d.width as f32)
+        let fit = ((area.w - 40.0) / d.width as f32)
             .min((area.h - 32.0) / d.height as f32)
             .max(0.01);
-        let paper = Rect {
-            x: area.x + (area.w - d.width as f32 * scale) / 2.0,
-            y: area.y + (area.h - d.height as f32 * scale) / 2.0,
-            w: d.width as f32 * scale,
-            h: d.height as f32 * scale,
+        // Selection zoom centers the element in the canvas at the
+        // largest scale that fits it. Nothing selected: honest Fit.
+        let (scale, selected) = match (self.zoom, self.selected.as_deref()) {
+            (Zoom::Actual, _) => (1.0, None),
+            (Zoom::Selected, Some(id)) => match d.elements.iter().find(|e| e.id == id) {
+                Some(e) => (selection_scale(area.w, area.h, e), Some(e)),
+                None => (fit, None),
+            },
+            _ => (fit, None),
         };
+        // True size centers the artboard; arrow keys explore it by
+        // panning. The clamp keeps the canvas center on the paper.
+        let paper = if self.zoom == Zoom::Actual {
+            Rect {
+                x: area.x + area.w / 2.0 - d.width as f32 / 2.0 + self.pan.0,
+                y: area.y + area.h / 2.0 - d.height as f32 / 2.0 + self.pan.1,
+                w: d.width as f32,
+                h: d.height as f32,
+            }
+        } else if let Some(e) = selected {
+            Rect {
+                x: area.x + area.w / 2.0 - (e.x + e.w / 2.0) * scale,
+                y: area.y + area.h / 2.0 - (e.y + e.h / 2.0) * scale,
+                w: d.width as f32 * scale,
+                h: d.height as f32 * scale,
+            }
+        } else {
+            Rect {
+                x: area.x + (area.w - d.width as f32 * scale) / 2.0,
+                y: area.y + (area.h - d.height as f32 * scale) / 2.0,
+                w: d.width as f32 * scale,
+                h: d.height as f32 * scale,
+            }
+        };
+        // The heading names the zoom mode and quantifies it: artwork
+        // size and live fit percentage, or the focused element and
+        // its zoom when the selection fills the canvas.
+        if let Some(c) = app.get_mut("canvas-title") {
+            c.props.insert(
+                "text".into(),
+                match (self.zoom, selected) {
+                    (Zoom::Actual, _) => "ACTUAL SIZE",
+                    (_, Some(_)) => "SELECTION / FIT",
+                    _ => "ARTBOARD / FIT",
+                }
+                .into(),
+            );
+        }
+        if let Some(c) = app.get_mut("canvas-size") {
+            let text = match selected {
+                Some(e) => {
+                    let shown = if e.name.chars().count() > 16 {
+                        format!("{}…", e.name.chars().take(15).collect::<String>())
+                    } else {
+                        e.name.clone()
+                    };
+                    format!(
+                        "{} · {:.0} x {:.0} px · {}%",
+                        shown,
+                        e.w,
+                        e.h,
+                        (scale * 100.0).round()
+                    )
+                }
+                None => format!(
+                    "{} x {} px · {}%",
+                    d.width,
+                    d.height,
+                    (scale * 100.0).round()
+                ),
+            };
+            c.props.insert("text".into(), text);
+        }
         // Read-only document geometry in the Eye. Ghost nodes paint nothing and
         // never intercept Hamesh's pointer dispatch. Canvas stacking stays canonical.
         for (i, e) in d.elements.iter().enumerate() {
@@ -749,6 +1063,25 @@ impl Editor {
                     r.x + (r.w - p.width() as f32 * scale) / 2.0,
                     r.y + 5.0,
                     scale,
+                    None,
+                );
+            }
+        }
+        // Palette chips paint over their buttons, the same precedent
+        // as the template thumbnails: the button stays the hit target.
+        for (i, hex) in self.palette().iter().enumerate() {
+            if let Some(n) = view.layout.get(&format!("swatch-{i}")) {
+                let chip = Self::solid_chip(hex);
+                let r = &n.rect;
+                let scale =
+                    ((r.w - 8.0) / chip.width() as f32).min((r.h - 8.0) / chip.height() as f32);
+                Self::blit(
+                    &mut frame,
+                    &chip,
+                    r.x + (r.w - chip.width() as f32 * scale) / 2.0,
+                    r.y + (r.h - chip.height() as f32 * scale) / 2.0,
+                    scale,
+                    None,
                 );
             }
         }
@@ -756,12 +1089,38 @@ impl Editor {
         if self.artwork_cache.as_ref().map(|(k, _)| k) != Some(&key) {
             self.artwork_cache = Some((key, artwork::render(&self.history.document)?));
         }
+        // Clip paper-space paint to the canvas area whenever the
+        // zoomed paper overflows it. Fit mode never takes this path,
+        // so its frame cost is unchanged.
+        let canvas = view.layout.get("canvas").map(|n| n.rect.clone());
+        let overflow = canvas.as_ref().is_some_and(|a| {
+            view.paper.x < a.x - 0.5
+                || view.paper.y < a.y - 0.5
+                || view.paper.x + view.paper.w > a.x + a.w + 0.5
+                || view.paper.y + view.paper.h > a.y + a.h + 0.5
+        });
+        let mask = if overflow {
+            canvas.and_then(|a| {
+                let mut m = tiny_skia::Mask::new(frame.width(), frame.height())?;
+                let path = PathBuilder::from_rect(tiny_skia::Rect::from_xywh(a.x, a.y, a.w, a.h)?);
+                m.fill_path(
+                    &path,
+                    tiny_skia::FillRule::Winding,
+                    true,
+                    Transform::identity(),
+                );
+                Some(m)
+            })
+        } else {
+            None
+        };
         Self::blit(
             &mut frame,
             &self.artwork_cache.as_ref().unwrap().1,
             view.paper.x,
             view.paper.y,
             view.scale,
+            mask.as_ref(),
         );
         if self.guides {
             let mut paint = Paint::default();
@@ -779,7 +1138,7 @@ impl Editor {
                         ..Default::default()
                     },
                     Transform::identity(),
-                    None,
+                    mask.as_ref(),
                 );
             }
         }
@@ -802,7 +1161,7 @@ impl Editor {
                         ..Default::default()
                     },
                     Transform::identity(),
-                    None,
+                    mask.as_ref(),
                 );
                 for (x, y) in [
                     (r.left(), r.top()),
@@ -811,14 +1170,27 @@ impl Editor {
                     (r.right(), r.bottom()),
                 ] {
                     if let Some(r) = tiny_skia::Rect::from_xywh(x - 2.5, y - 2.5, 5.0, 5.0) {
-                        frame.fill_rect(r, &paint, Transform::identity(), None);
+                        frame.fill_rect(r, &paint, Transform::identity(), mask.as_ref());
                     }
                 }
             }
         }
         Ok(frame)
     }
-    fn blit(dst: &mut Pixmap, src: &Pixmap, x: f32, y: f32, scale: f32) {
+    fn solid_chip(hex: &str) -> Pixmap {
+        let [r, g, b] = crate::document::rgb(hex).unwrap_or([128, 128, 128]);
+        let mut chip = Pixmap::new(8, 8).unwrap();
+        chip.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
+        chip
+    }
+    fn blit(
+        dst: &mut Pixmap,
+        src: &Pixmap,
+        x: f32,
+        y: f32,
+        scale: f32,
+        mask: Option<&tiny_skia::Mask>,
+    ) {
         dst.draw_pixmap(
             0,
             0,
@@ -828,7 +1200,7 @@ impl Editor {
                 ..Default::default()
             },
             Transform::from_scale(scale, scale).post_translate(x, y),
-            None,
+            mask,
         );
     }
     fn update(&mut self, edit: impl FnOnce(&mut Document)) -> Result<()> {
@@ -849,10 +1221,19 @@ impl Editor {
     }
     /// Keep the selection across undo/redo when the element still exists;
     /// otherwise clear it so the inspector never points at a removed element.
+    /// Assign the selection. Any new selection re-arms list follow so
+    /// the layer list scrolls it into view; manual Up/Down scrolling
+    /// disarms follow until the next selection change.
+    fn select(&mut self, id: Option<String>) {
+        self.selected = id;
+        self.follow_selection = true;
+    }
     fn retain_selection(&mut self) {
         if let Some(id) = self.selected.clone() {
             if !self.history.document.elements.iter().any(|e| e.id == id) {
                 self.selected = None;
+            } else {
+                self.follow_selection = true;
             }
         }
     }
@@ -982,14 +1363,15 @@ impl Editor {
             self.active = None;
             let px = (x - view.paper.x) / view.scale;
             let py = (y - view.paper.y) / view.scale;
-            self.selected = self
-                .history
-                .document
-                .elements
-                .iter()
-                .rev()
-                .find(|e| px >= e.x && py >= e.y && px < e.x + e.w && py < e.y + e.h)
-                .map(|e| e.id.clone());
+            self.select(
+                self.history
+                    .document
+                    .elements
+                    .iter()
+                    .rev()
+                    .find(|e| px >= e.x && py >= e.y && px < e.x + e.w && py < e.y + e.h)
+                    .map(|e| e.id.clone()),
+            );
             if let Some(e) = self.element() {
                 self.drag = Some(Drag {
                     before: self.history.document.clone(),
@@ -1049,6 +1431,7 @@ impl Editor {
         self.saved = self.save_identity();
         self.selected = None;
         self.layer_offset = 0;
+        self.pan = (0.0, 0.0);
         self.status = "Project opened.".into();
         Ok(())
     }
@@ -1056,14 +1439,35 @@ impl Editor {
         if let Some(i) = id.strip_prefix("template-") {
             let doc = Document::template(i.parse()?);
             self.update(|d| *d = doc)?;
-            self.selected = None;
+            self.select(None);
             self.layer_offset = 0;
+            self.pan = (0.0, 0.0);
             self.status = "Starter opened. Undo returns to your previous design.".into();
             return Ok(());
         }
         if let Some(id) = id.strip_prefix("layer-") {
-            self.selected = Some(id.into());
+            self.select(Some(id.into()));
             self.status = "Layer selected.".into();
+            return Ok(());
+        }
+        if let Some(w) = id.strip_prefix("weight-") {
+            let v: u16 = w.parse()?;
+            if !(1..=1000).contains(&v) {
+                bail!("Weight {v} is outside 1-1000");
+            }
+            self.selected_update(|e| {
+                if let Kind::Text { weight, .. } = &mut e.kind {
+                    *weight = v;
+                }
+            })?;
+            self.status = format!("Weight {v}.");
+            return Ok(());
+        }
+        if let Some(i) = id.strip_prefix("swatch-") {
+            if let Some(hex) = self.palette().get(i.parse::<usize>()?).cloned() {
+                self.selected_update(|e| e.color = hex.clone())?;
+                self.status = format!("Painted {hex}.");
+            }
             return Ok(());
         }
         if let Some(tab) = id.strip_prefix("tab-") {
@@ -1074,8 +1478,9 @@ impl Editor {
             "document-settings" => self.tab = "canvas".into(),
             "blank" => {
                 self.update(|d| *d = Document::blank())?;
-                self.selected = None;
+                self.select(None);
                 self.layer_offset = 0;
+                self.pan = (0.0, 0.0);
             }
             "undo" => {
                 self.history.undo();
@@ -1088,10 +1493,37 @@ impl Editor {
                 self.status = "Redone.".into();
             }
             "guides" => self.guides = !self.guides,
-            "layers-up" => self.layer_offset = self.layer_offset.saturating_sub(2),
+            "zoom" => {
+                self.zoom = match self.zoom {
+                    Zoom::Fit => Zoom::Selected,
+                    Zoom::Selected => Zoom::Actual,
+                    Zoom::Actual => Zoom::Fit,
+                };
+                self.pan = (0.0, 0.0);
+                self.status = match self.zoom {
+                    Zoom::Fit => "Zoom: whole artboard.",
+                    Zoom::Selected => "Zoom: selection fills the canvas.",
+                    Zoom::Actual => "Zoom: actual size. Arrow keys pan.",
+                }
+                .into();
+            }
+            "library-toggle" => {
+                self.library_open = !self.library_open;
+                self.status = if self.library_open {
+                    "Library shown."
+                } else {
+                    "Library hidden; layers have the room."
+                }
+                .into();
+            }
+            "layers-up" => {
+                self.layer_offset = self.layer_offset.saturating_sub(2);
+                self.follow_selection = false;
+            }
             "layers-down" => {
                 self.layer_offset = (self.layer_offset + 2)
-                    .min(self.history.document.elements.len().saturating_sub(2))
+                    .min(self.history.document.elements.len().saturating_sub(2));
+                self.follow_selection = false;
             }
             "save" | "save-project" => {
                 self.history.document.save(&self.project)?;
@@ -1164,7 +1596,7 @@ impl Editor {
                         kind,
                     })
                 })?;
-                self.selected = Some(copy);
+                self.select(Some(copy));
                 self.tab = "type".into();
                 self.layer_offset = 0;
             }
@@ -1196,7 +1628,7 @@ impl Editor {
                         .max(0.0);
                     let id = copy.id.clone();
                     self.update(|d| d.elements.push(copy))?;
-                    self.selected = Some(id);
+                    self.select(Some(id));
                 }
             }
             "front" | "back" => {
@@ -1343,7 +1775,7 @@ impl Editor {
                     }
                 }
                 "Escape" => {
-                    self.selected = None;
+                    self.select(None);
                     self.focus = None;
                 }
                 "Delete" => self.action("delete")?,
@@ -1359,6 +1791,24 @@ impl Editor {
                         "Down" => e.y = (e.y + 1.0).min(h - e.h),
                         _ => {}
                     })?;
+                }
+                "Left" | "Right" | "Up" | "Down"
+                    if self.selected.is_none() && !matches!(self.zoom, Zoom::Fit) =>
+                {
+                    // Pan the zoomed canvas with the same arrow
+                    // semantics as nudging: Right moves the paper right.
+                    let step = 20.0;
+                    let (dx, dy) = match key {
+                        "Left" => (-step, 0.0),
+                        "Right" => (step, 0.0),
+                        "Up" => (0.0, -step),
+                        _ => (0.0, step),
+                    };
+                    self.pan = clamp_pan(
+                        (self.pan.0 + dx, self.pan.1 + dy),
+                        view.paper.w,
+                        view.paper.h,
+                    );
                 }
                 _ => {}
             }

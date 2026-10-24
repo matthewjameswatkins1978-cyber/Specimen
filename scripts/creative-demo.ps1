@@ -69,7 +69,14 @@ function Select-Artwork([string]$Id) {
     $clicked = Invoke-EyeHand 'click' @($point)
     if ($clicked.hit -ne 'canvas') { throw "Canvas selection missed: $($clicked.hit)" }
     $inspector = Detail 'inspector-title'
-    if ($inspector.props.text -ne $element.name) { throw "Wrong element selected: wanted $Id, inspector shows $($inspector.props.text)" }
+    $heading = $inspector.props.text
+    $want = $element.name
+    if ($element.kind.type -eq 'text') {
+        $first = (($element.kind.text -split "`n")[0]).Trim()
+        if ($first.Length -gt 24) { $first = $first.Substring(0, 24) }
+        $want = if ($first) { "Text · $first" } else { "Text" }
+    }
+    if ($heading -ne $want) { throw "Wrong element selected: wanted $want, inspector shows $heading" }
     Click 'tab-type'
 }
 function Check-ControlBounds($Map) {

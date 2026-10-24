@@ -1,7 +1,7 @@
 //! Controller/layout regression evidence. These are in-process controller
 //! checks, not the separate-process Eye/Hand acceptance demonstration.
 use crate::{
-    document::{Document, Kind},
+    document::{Document, Element, Kind},
     editor::{library_capacity, Editor},
 };
 use hamesh_core::Role;
@@ -469,16 +469,434 @@ fn undo_redo_retains_live_selection_only() {
     assert!(editor.status.contains("Selection cleared"));
 }
 
+/// Layers follow: the selected element scrolls into view, the list
+/// states its visible window, and manual Up/Down scrolling holds its
+/// position until the selection changes again.
+#[test]
+fn layers_follow_selection_and_state_their_window() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("layers-follow.specimen.json");
+    // Template 0 carries 17 elements with `title` third-oldest
+    // (reverse-position 14); at 1440x820 the fitted window holds
+    // 3 layer rows (capacity contract above), so the window
+    // covering the selection reads 13-15.
+    editor.action("layer-title").unwrap();
+    let view = editor.view(1440, 820);
+    let node = view
+        .layout
+        .get("layer-title")
+        .expect("selected layer must scroll into view");
+    assert!(!node.clipped_by_parent);
+    let text = view
+        .app
+        .get("layers-position")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(text, "Showing 13-15 of 17");
+    // Manual scroll holds: the selection may leave the window, and
+    // the indicator keeps stating the visible range honestly.
+    editor.action("layers-down").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("layer-title").is_none());
+    let text = view
+        .app
+        .get("layers-position")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(text, "Showing 3-5 of 17");
+    // Reselecting re-arms follow and brings the layer back.
+    editor.action("layer-title").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("layer-title").is_some());
+}
+
+/// Inspector levels: canvas properties stay off the element tabs,
+/// numeric fields state their units, and text alignment shows state.
+#[test]
+fn inspector_separates_levels_and_states_alignment() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("inspector-levels.specimen.json");
+    editor.selected = Some("title".into());
+    // Paper is canvas-level: absent with an element on the Type
+    // tab, present on the Canvas tab.
+    editor.tab = "type".into();
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("field-background").is_none());
+    assert!(view.layout.get("field-color").is_some());
+    editor.tab = "canvas".into();
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("field-background").is_some());
+    // Numeric fields state their units in the label.
+    editor.tab = "type".into();
+    let view = editor.view(1440, 980);
+    for (id, unit) in [
+        ("label-size", "(px)"),
+        ("label-tracking", "(px)"),
+        ("label-leading", "(x)"),
+    ] {
+        let text = view
+            .app
+            .get(id)
+            .and_then(|c| c.props.get("text"))
+            .cloned()
+            .unwrap_or_default();
+        assert!(text.contains(unit), "{id} label {text:?} lacks {unit}");
+    }
+    // The active text alignment reads selected; the others do not.
+    let variant = |id: &str| {
+        view.app
+            .get(id)
+            .and_then(|c| c.props.get("variant"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(variant("align-left"), "primary");
+    assert_eq!(variant("align-center"), "ghost");
+    editor.action("align-center").unwrap();
+    let view = editor.view(1440, 980);
+    let variant = |id: &str| {
+        view.app
+            .get(id)
+            .and_then(|c| c.props.get("variant"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(variant("align-center"), "primary");
+    assert_eq!(variant("align-left"), "ghost");
+}
+
+/// Toolbar groups and live zoom: ghost struts separate the draw,
+/// history and view groups, and the canvas heading quantifies
+/// the fit zoom it names.
+#[test]
+fn toolbar_groups_and_zoom_readout() {
+    let fixture = Fixture::new();
+    let editor = fixture.editor("toolbar-zoom.specimen.json");
+    let view = editor.view(1440, 980);
+    // The mode label is gone; fixed air separates the groups.
+    assert!(view.layout.get("toolbar-name").is_none());
+    for id in ["tools-gap", "history-gap"] {
+        let node = view.layout.get(id).expect("group strut holds layout room");
+        assert!((node.rect.w - 16.0).abs() < 0.5);
+        let ghost = view
+            .app
+            .get(id)
+            .and_then(|c| c.props.get("ghost"))
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ghost, "true");
+    }
+    // The heading states artwork size and the live fit zoom.
+    let text = view
+        .app
+        .get("canvas-size")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        text,
+        format!("{} x {} px · {}%", 900, 1200, (view.scale * 100.0).round())
+    );
+}
+
+/// Document palette: swatches show the artwork's own colours and
+/// paint the selection through real actions, down to the pixels.
+#[test]
+fn colour_palette_applies_document_colours() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("palette.specimen.json");
+    editor.selected = Some("subtitle".into());
+    let palette = editor.palette();
+    assert!(!palette.is_empty() && palette.len() <= 6);
+    assert!(palette.iter().any(|c| c.eq_ignore_ascii_case("#EEE9D9")));
+    let before = editor.element().unwrap().color.clone();
+    editor.action("swatch-0").unwrap();
+    assert_eq!(editor.element().unwrap().color, palette[0]);
+    editor.action("undo").unwrap();
+    assert_eq!(editor.element().unwrap().color, before);
+    // The chip paint reaches the frame: the swatch centre pixel
+    // carries the palette colour.
+    let view = editor.view(1440, 980);
+    let pix = editor.render(&view).unwrap();
+    let node = view.layout.get("swatch-0").expect("first swatch");
+    let (cx, cy) = (
+        (node.rect.x + node.rect.w / 2.0) as u32,
+        (node.rect.y + node.rect.h / 2.0) as u32,
+    );
+    let px = pix.pixel(cx, cy).expect("swatch centre inside frame");
+    let [r, g, b] = crate::document::rgb(&palette[0]).unwrap();
+    assert_eq!((px.red(), px.green(), px.blue()), (r, g, b));
+}
+
+/// Selection zoom: the element centers in the canvas at the fitted
+/// scale, the heading names it, empty selection falls back to Fit,
+/// and the zoomed frame still renders clipped to the canvas.
+#[test]
+fn zoom_focus_centers_selection_and_clips_to_canvas() {
+    use crate::editor::selection_scale;
+    // Pure scale math, including the tiny-element clamp.
+    let tiny = Element::text("t", "T", 0., 0., 2., 2., 16., "#FFFFFF");
+    assert_eq!(selection_scale(940.0, 770.0, &tiny), 8.0);
+    let big = Element::text("b", "B", 0., 0., 200., 100., 16., "#FFFFFF");
+    assert!((selection_scale(940.0, 770.0, &big) - 4.5).abs() < 0.01);
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("zoom-focus.specimen.json");
+    editor.selected = Some("channel".into());
+    editor.action("zoom").unwrap();
+    let view = editor.view(1440, 980);
+    let area = view.layout.get("canvas").unwrap().rect.clone();
+    let e = editor
+        .history
+        .document
+        .elements
+        .iter()
+        .find(|x| x.id == "channel")
+        .unwrap()
+        .clone();
+    let expected = ((area.w - 40.0) / e.w)
+        .min((area.h - 32.0) / e.h)
+        .clamp(0.01, 8.0);
+    assert!((view.scale - expected).abs() < 0.01);
+    let (ecx, ecy) = (e.x + e.w / 2.0, e.y + e.h / 2.0);
+    assert!((view.paper.x + ecx * view.scale - (area.x + area.w / 2.0)).abs() < 1.0);
+    assert!((view.paper.y + ecy * view.scale - (area.y + area.h / 2.0)).abs() < 1.0);
+    let title = view
+        .app
+        .get("canvas-title")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(title, "SELECTION / FIT");
+    // The zoomed frame renders clipped to the canvas size.
+    let pix = editor.render(&view).unwrap();
+    assert_eq!((pix.width(), pix.height()), (1440, 980));
+    // Nothing selected: honest Fit fallback at the same window.
+    editor.selected = None;
+    let view = editor.view(1440, 980);
+    let fit = ((area.w - 40.0) / 900.0)
+        .min((area.h - 32.0) / 1200.0)
+        .max(0.01);
+    assert!((view.scale - fit).abs() < 0.01);
+}
+
+/// Actual-size zoom: true scale centered on the canvas, arrow-key
+/// panning that can never lose the artwork, and a three-way toggle.
+#[test]
+fn zoom_actual_centers_true_size_and_pans_with_arrows() {
+    use crate::editor::clamp_pan;
+    // The canvas center never leaves the paper.
+    assert_eq!(clamp_pan((500.0, -700.0), 900.0, 1200.0), (450.0, -600.0));
+    assert_eq!(clamp_pan((10.0, 20.0), 900.0, 1200.0), (10.0, 20.0));
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("zoom-actual.specimen.json");
+    editor.selected = Some("channel".into());
+    editor.action("zoom").unwrap();
+    editor.action("zoom").unwrap();
+    let view = editor.view(1440, 980);
+    assert_eq!(view.scale, 1.0);
+    let area = view.layout.get("canvas").unwrap().rect.clone();
+    let (cx, cy) = (area.x + area.w / 2.0, area.y + area.h / 2.0);
+    assert!((view.paper.x + 900.0 / 2.0 - cx).abs() < 1.0);
+    assert!((view.paper.y + 1200.0 / 2.0 - cy).abs() < 1.0);
+    let title = view
+        .app
+        .get("canvas-title")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(title, "ACTUAL SIZE");
+    let zoom = view
+        .app
+        .get("zoom")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(zoom, "Zoom: Actual");
+    // Arrows pan with nothing selected; the artwork stays reachable.
+    editor.selected = None;
+    let view = editor.view(1440, 980);
+    editor.key(&view, "Right").unwrap();
+    let moved = editor.view(1440, 980);
+    assert!((moved.paper.x - view.paper.x - 20.0).abs() < 0.01);
+    for _ in 0..100 {
+        let v = editor.view(1440, 980);
+        editor.key(&v, "Right").unwrap();
+    }
+    let view = editor.view(1440, 980);
+    assert!((view.paper.x - cx).abs() < 1.0);
+    // The zoomed frame still renders at full size, clipped to canvas.
+    let pix = editor.render(&view).unwrap();
+    assert_eq!((pix.width(), pix.height()), (1440, 980));
+    // Toggling on returns to Fit.
+    editor.action("zoom").unwrap();
+    let view = editor.view(1440, 980);
+    let fit = ((area.w - 40.0) / 900.0)
+        .min((area.h - 32.0) / 1200.0)
+        .max(0.01);
+    assert!((view.scale - fit).abs() < 0.01);
+}
+
+/// Weight quick-set and heading: common weights are one tap with
+/// visible state, and the heading names kind and content.
+#[test]
+fn weight_quickset_and_heading_state_the_selection() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("weight.specimen.json");
+    editor.selected = Some("title".into());
+    editor.tab = "type".into();
+    let view = editor.view(1440, 980);
+    // The heading names kind and content, not the internal id.
+    let heading = view
+        .app
+        .get("inspector-title")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(heading, "Text · AFTER");
+    let variant = |id: &str| {
+        view.app
+            .get(id)
+            .and_then(|c| c.props.get("variant"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(variant("weight-700"), "primary");
+    assert_eq!(variant("weight-400"), "ghost");
+    editor.action("weight-400").unwrap();
+    assert!(matches!(
+        editor.element().map(|e| &e.kind),
+        Some(Kind::Text { weight: 400, .. })
+    ));
+    editor.action("undo").unwrap();
+    assert!(matches!(
+        editor.element().map(|e| &e.kind),
+        Some(Kind::Text { weight: 700, .. })
+    ));
+    // Shapes get no weight row.
+    editor.selected = Some("orbit-lime".into());
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("weight-400").is_none());
+}
+
+/// Collapsible library: hiding the template cards hands the room
+/// to layers, and showing them restores the browser.
+#[test]
+fn library_collapse_hands_room_to_layers() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("library-collapse.specimen.json");
+    // Expanded by default: the browser is present.
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("template-0").is_some());
+    // Collapse: cards go away, rows grow, controls stay reachable.
+    editor.action("library-toggle").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("template-0").is_none());
+    assert!(view.layout.get("blank").is_some());
+    let rows = view
+        .app
+        .components
+        .keys()
+        .filter(|id| id.starts_with("layer-"))
+        .count();
+    assert_eq!(rows, 8);
+    let toggle = view
+        .app
+        .get("library-toggle")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(toggle, "+");
+    for (id, component) in &view.app.components {
+        if !matches!(component.role, Role::Button | Role::TextInput) {
+            continue;
+        }
+        if !component.enabled {
+            continue;
+        }
+        let node = view.layout.get(id).expect("Eye geometry");
+        let r = &node.rect;
+        assert!(
+            node.effectively_visible
+                && !node.clipped_by_parent
+                && r.x >= -0.5
+                && r.y >= -0.5
+                && r.x + r.w <= 1440.0 + 0.5
+                && r.y + r.h <= 820.0 + 0.5,
+            "{id} clipped/outside: {r:?}"
+        );
+    }
+    // Expand again: the browser returns.
+    editor.action("library-toggle").unwrap();
+    let view = editor.view(1440, 820);
+    assert!(view.layout.get("template-0").is_some());
+}
+
+/// Saved state in the header: the document title names unsaved work.
+#[test]
+fn header_names_unsaved_work() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("header-dirty.specimen.json");
+    let title_of = |editor: &Editor| {
+        editor
+            .view(1440, 980)
+            .app
+            .get("project-title")
+            .and_then(|c| c.props.get("text"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    // Fresh, never-saved documents read as unsaved.
+    assert!(title_of(&editor).ends_with(" · unsaved"));
+    editor.action("save").unwrap();
+    assert_eq!(title_of(&editor), editor.history.document.title);
+    // Editing dirties it again.
+    editor.selected = Some("title".into());
+    enter_field(&mut editor, "x", "64").unwrap();
+    assert!(title_of(&editor).ends_with(" · unsaved"));
+}
+
+/// Autosave recovery surfaces only when relevant: for a never-saved
+/// project it is all there is; once saved, only a newer recovery
+/// (a dirty close elsewhere) brings the entry back.
+#[test]
+fn autosave_recovery_surfaces_only_when_relevant() {
+    use crate::editor::recovery_matters;
+    let fixture = Fixture::new();
+    let old = fixture.directory.join("recovery-1.specimen.json");
+    std::fs::write(&old, "{}").unwrap();
+    let mut editor = fixture.editor("project.specimen.json");
+    // Never saved: the recovery is all there is.
+    assert!(recovery_matters(&editor.project, &old));
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("saved-recovery").is_some());
+    // After saving, the project is newer than any recovery: hidden.
+    editor.action("save").unwrap();
+    assert!(!recovery_matters(&editor.project, &old));
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("saved-recovery").is_none());
+    // A newer recovery (a dirty close elsewhere) resurfaces it.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let fresh = fixture.directory.join("recovery-9.specimen.json");
+    std::fs::write(&fresh, "{}").unwrap();
+    assert!(recovery_matters(&editor.project, &fresh));
+    let view = editor.view(1440, 980);
+    assert!(view.layout.get("saved-recovery").is_some());
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.
 #[test]
 fn library_capacity_matches_measured_chrome() {
-    assert_eq!(library_capacity(840.0, 2, true), (4, 2));
-    assert_eq!(library_capacity(820.0, 1, true), (5, 1));
-    assert_eq!(library_capacity(680.0, 2, true), (1, 1));
-    assert_eq!(library_capacity(940.0, 2, true), (7, 2));
-    assert_eq!(library_capacity(680.0, 0, false), (5, 0));
+    assert_eq!(library_capacity(840.0, 2, true, true), (3, 2));
+    assert_eq!(library_capacity(820.0, 1, true, true), (3, 1));
+    assert_eq!(library_capacity(680.0, 2, true, true), (1, 0));
+    assert_eq!(library_capacity(940.0, 2, true, true), (5, 2));
+    assert_eq!(library_capacity(680.0, 0, false, true), (3, 0));
+    assert_eq!(library_capacity(680.0, 2, true, false), (8, 2));
+    assert_eq!(library_capacity(840.0, 0, false, false), (8, 0));
 }
 
 /// Seeded-workspace regression for the clipped recovery entry: with
@@ -507,7 +925,7 @@ fn library_with_saved_and_recovery_projects_stays_unclipped() {
                 editor.tab = tab.into();
                 let view = editor.view(width, height);
                 let context = format!("{width}x{height} selection={selection:?} tab={tab}");
-                let (rows, saved_shown) = library_capacity(height as f32 - 140.0, 3, true);
+                let (rows, saved_shown) = library_capacity(height as f32 - 140.0, 3, true, true);
                 for i in 0..saved_shown {
                     let id = format!("saved-{i}");
                     if view.layout.get(&id).is_none() {
