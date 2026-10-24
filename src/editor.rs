@@ -218,6 +218,21 @@ impl Editor {
         };
         self.project.with_file_name(name)
     }
+    /// Document palette in encounter order: canvas paper first,
+    /// then each element colour once, capped so the swatch row
+    /// fits the inspector. A swatch paints the selection, keeping
+    /// the artwork inside its own palette unless the hex field
+    /// says otherwise.
+    pub fn palette(&self) -> Vec<String> {
+        let mut out = vec![self.history.document.background.clone()];
+        for e in &self.history.document.elements {
+            if !out.iter().any(|c| c.eq_ignore_ascii_case(&e.color)) {
+                out.push(e.color.clone());
+            }
+        }
+        out.truncate(6);
+        out
+    }
     pub fn element(&self) -> Option<&Element> {
         let id = self.selected.as_ref()?;
         self.history.document.elements.iter().find(|e| &e.id == id)
@@ -639,6 +654,18 @@ impl Editor {
                                         label(s, "shape-section", "SHAPE FILL");
                                     }
                                     self.field(s, "color", "Colour");
+                                    row(s, "palette", 36.0, |s| {
+                                        for (i, hex) in self.palette().iter().enumerate() {
+                                            let id = format!("swatch-{i}");
+                                            button(s, &id, "", false);
+                                            if let Some(c) = s.app.get_mut(&id) {
+                                                c.name = format!("Paint selection {hex}");
+                                                c.props.insert("h".into(), "28".into());
+                                                c.props.insert("w".into(), "28".into());
+                                            }
+                                        }
+                                        b::spacer(s, "palette-space");
+                                    });
                                 } else {
                                     label(s, "geometry-section", "GEOMETRY / DOCUMENT PIXELS");
                                     for (f, l) in [
@@ -835,6 +862,23 @@ impl Editor {
                 );
             }
         }
+        // Palette chips paint over their buttons, the same precedent
+        // as the template thumbnails: the button stays the hit target.
+        for (i, hex) in self.palette().iter().enumerate() {
+            if let Some(n) = view.layout.get(&format!("swatch-{i}")) {
+                let chip = Self::solid_chip(hex);
+                let r = &n.rect;
+                let scale =
+                    ((r.w - 8.0) / chip.width() as f32).min((r.h - 8.0) / chip.height() as f32);
+                Self::blit(
+                    &mut frame,
+                    &chip,
+                    r.x + (r.w - chip.width() as f32 * scale) / 2.0,
+                    r.y + (r.h - chip.height() as f32 * scale) / 2.0,
+                    scale,
+                );
+            }
+        }
         let key = self.fingerprint();
         if self.artwork_cache.as_ref().map(|(k, _)| k) != Some(&key) {
             self.artwork_cache = Some((key, artwork::render(&self.history.document)?));
@@ -900,6 +944,12 @@ impl Editor {
             }
         }
         Ok(frame)
+    }
+    fn solid_chip(hex: &str) -> Pixmap {
+        let [r, g, b] = crate::document::rgb(hex).unwrap_or([128, 128, 128]);
+        let mut chip = Pixmap::new(8, 8).unwrap();
+        chip.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
+        chip
     }
     fn blit(dst: &mut Pixmap, src: &Pixmap, x: f32, y: f32, scale: f32) {
         dst.draw_pixmap(
@@ -1157,6 +1207,13 @@ impl Editor {
         if let Some(id) = id.strip_prefix("layer-") {
             self.select(Some(id.into()));
             self.status = "Layer selected.".into();
+            return Ok(());
+        }
+        if let Some(i) = id.strip_prefix("swatch-") {
+            if let Some(hex) = self.palette().get(i.parse::<usize>()?).cloned() {
+                self.selected_update(|e| e.color = hex.clone())?;
+                self.status = format!("Painted {hex}.");
+            }
             return Ok(());
         }
         if let Some(tab) = id.strip_prefix("tab-") {

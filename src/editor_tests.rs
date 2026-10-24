@@ -601,6 +601,35 @@ fn toolbar_groups_and_zoom_readout() {
     );
 }
 
+/// Document palette: swatches show the artwork's own colours and
+/// paint the selection through real actions, down to the pixels.
+#[test]
+fn colour_palette_applies_document_colours() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("palette.specimen.json");
+    editor.selected = Some("subtitle".into());
+    let palette = editor.palette();
+    assert!(!palette.is_empty() && palette.len() <= 6);
+    assert!(palette.iter().any(|c| c.eq_ignore_ascii_case("#EEE9D9")));
+    let before = editor.element().unwrap().color.clone();
+    editor.action("swatch-0").unwrap();
+    assert_eq!(editor.element().unwrap().color, palette[0]);
+    editor.action("undo").unwrap();
+    assert_eq!(editor.element().unwrap().color, before);
+    // The chip paint reaches the frame: the swatch centre pixel
+    // carries the palette colour.
+    let view = editor.view(1440, 980);
+    let pix = editor.render(&view).unwrap();
+    let node = view.layout.get("swatch-0").expect("first swatch");
+    let (cx, cy) = (
+        (node.rect.x + node.rect.w / 2.0) as u32,
+        (node.rect.y + node.rect.h / 2.0) as u32,
+    );
+    let px = pix.pixel(cx, cy).expect("swatch centre inside frame");
+    let [r, g, b] = crate::document::rgb(&palette[0]).unwrap();
+    assert_eq!((px.red(), px.green(), px.blue()), (r, g, b));
+}
+
 /// Library capacity contract: fitted (layer rows, saved rows) for
 /// measured panel chrome. Short panels shed saved rows first and
 /// always keep the autosave recovery entry visible.
