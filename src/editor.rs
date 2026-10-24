@@ -24,6 +24,15 @@ struct Drag {
     start: (f32, f32),
     origin: (f32, f32),
 }
+/// Canvas zoom: whole artboard, or the selection fitted to the
+/// canvas. Selection zoom reuses the paper transform, so hit-testing,
+/// drag and the Eye stay consistent; paper-space paint is clipped
+/// to the canvas area whenever it overflows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Zoom {
+    Fit,
+    Selected,
+}
 pub struct Editor {
     pub history: History,
     pub selected: Option<String>,
@@ -34,6 +43,7 @@ pub struct Editor {
     pub tab: String,
     pub guides: bool,
     pub layer_offset: usize,
+    zoom: Zoom,
     /// When true, the layer list scrolls to keep the selection visible.
     /// Manual Up/Down scrolling clears it until the selection changes.
     follow_selection: bool,
@@ -133,6 +143,13 @@ fn row(s: &mut b::Scope, id: &str, height: f32, kids: impl FnOnce(&mut b::Scope)
 /// saved rows before layer rows (minimum 1); the latest autosave
 /// recovery always stays visible. The saved header only renders
 /// when saved rows fit.
+/// Largest scale that fits the element box in the canvas area,
+/// clamped so tiny elements cannot blow navigation up.
+pub(crate) fn selection_scale(area_w: f32, area_h: f32, e: &Element) -> f32 {
+    ((area_w - 40.0) / e.w.max(0.01))
+        .min((area_h - 32.0) / e.h.max(0.01))
+        .clamp(0.01, 8.0)
+}
 pub(crate) fn library_capacity(
     panel_h: f32,
     saved_available: usize,
@@ -183,6 +200,7 @@ impl Editor {
             guides: true,
             layer_offset: 0,
             follow_selection: true,
+            zoom: Zoom::Fit,
             composer: Composer::new(),
             active: None,
             select_all: false,
@@ -362,6 +380,16 @@ impl Editor {
                 button(s, "undo", "Undo", false);
                 button(s, "redo", "Redo", false);
                 strut(s, "history-gap", 16.0);
+                button(
+                    s,
+                    "zoom",
+                    if self.zoom == Zoom::Fit {
+                        "Zoom: Fit"
+                    } else {
+                        "Zoom: Selection"
+                    },
+                    false,
+                );
                 button(
                     s,
                     "guides",
@@ -748,12 +776,21 @@ impl Editor {
             ("layers-title", 58.0),
             ("layers-up", 44.0),
             ("layers-down", 62.0),
+            ("canvas-title", 130.0),
             ("canvas-size", 170.0),
             ("status", (width as f32 - 200.0).max(100.0)),
             ("engine-label", 160.0),
         ] {
             if let Some(c) = app.get_mut(id) {
                 c.props.insert("w".into(), w.to_string());
+            }
+        }
+        // Selection headings run longer (element name + zoom): give
+        // the size label room only in that mode, keeping the Fit
+        // heading tight.
+        if matches!(self.zoom, Zoom::Selected) && self.selected.is_some() {
+            if let Some(c) = app.get_mut("canvas-size") {
+                c.props.insert("w".into(), "220".into());
             }
         }
         if let Some(c) = app.get_mut("workspace") {
@@ -778,27 +815,70 @@ impl Editor {
         let mut layout = hamesh_layout::compute(&app, width as f32, height as f32);
         let area = layout.get("canvas").unwrap().rect.clone();
         let d = &self.history.document;
-        let scale = ((area.w - 40.0) / d.width as f32)
+        let fit = ((area.w - 40.0) / d.width as f32)
             .min((area.h - 32.0) / d.height as f32)
             .max(0.01);
-        let paper = Rect {
-            x: area.x + (area.w - d.width as f32 * scale) / 2.0,
-            y: area.y + (area.h - d.height as f32 * scale) / 2.0,
-            w: d.width as f32 * scale,
-            h: d.height as f32 * scale,
+        // Selection zoom centers the element in the canvas at the
+        // largest scale that fits it. Nothing selected: honest Fit.
+        let (scale, selected) = match (self.zoom, self.selected.as_deref()) {
+            (Zoom::Selected, Some(id)) => match d.elements.iter().find(|e| e.id == id) {
+                Some(e) => (selection_scale(area.w, area.h, e), Some(e)),
+                None => (fit, None),
+            },
+            _ => (fit, None),
         };
-        // The heading quantifies the fit it names: artwork size
-        // and the live zoom percentage.
-        if let Some(c) = app.get_mut("canvas-size") {
+        let paper = if let Some(e) = selected {
+            Rect {
+                x: area.x + area.w / 2.0 - (e.x + e.w / 2.0) * scale,
+                y: area.y + area.h / 2.0 - (e.y + e.h / 2.0) * scale,
+                w: d.width as f32 * scale,
+                h: d.height as f32 * scale,
+            }
+        } else {
+            Rect {
+                x: area.x + (area.w - d.width as f32 * scale) / 2.0,
+                y: area.y + (area.h - d.height as f32 * scale) / 2.0,
+                w: d.width as f32 * scale,
+                h: d.height as f32 * scale,
+            }
+        };
+        // The heading names the zoom mode and quantifies it: artwork
+        // size and live fit percentage, or the focused element and
+        // its zoom when the selection fills the canvas.
+        if let Some(c) = app.get_mut("canvas-title") {
             c.props.insert(
                 "text".into(),
-                format!(
+                match selected {
+                    Some(_) => "SELECTION / FIT",
+                    None => "ARTBOARD / FIT",
+                }
+                .into(),
+            );
+        }
+        if let Some(c) = app.get_mut("canvas-size") {
+            let text = match selected {
+                Some(e) => {
+                    let shown = if e.name.chars().count() > 16 {
+                        format!("{}…", e.name.chars().take(15).collect::<String>())
+                    } else {
+                        e.name.clone()
+                    };
+                    format!(
+                        "{} · {:.0} x {:.0} px · {}%",
+                        shown,
+                        e.w,
+                        e.h,
+                        (scale * 100.0).round()
+                    )
+                }
+                None => format!(
                     "{} x {} px · {}%",
                     d.width,
                     d.height,
                     (scale * 100.0).round()
                 ),
-            );
+            };
+            c.props.insert("text".into(), text);
         }
         // Read-only document geometry in the Eye. Ghost nodes paint nothing and
         // never intercept Hamesh's pointer dispatch. Canvas stacking stays canonical.
@@ -859,6 +939,7 @@ impl Editor {
                     r.x + (r.w - p.width() as f32 * scale) / 2.0,
                     r.y + 5.0,
                     scale,
+                    None,
                 );
             }
         }
@@ -876,6 +957,7 @@ impl Editor {
                     r.x + (r.w - chip.width() as f32 * scale) / 2.0,
                     r.y + (r.h - chip.height() as f32 * scale) / 2.0,
                     scale,
+                    None,
                 );
             }
         }
@@ -883,12 +965,38 @@ impl Editor {
         if self.artwork_cache.as_ref().map(|(k, _)| k) != Some(&key) {
             self.artwork_cache = Some((key, artwork::render(&self.history.document)?));
         }
+        // Clip paper-space paint to the canvas area whenever the
+        // zoomed paper overflows it. Fit mode never takes this path,
+        // so its frame cost is unchanged.
+        let canvas = view.layout.get("canvas").map(|n| n.rect.clone());
+        let overflow = canvas.as_ref().is_some_and(|a| {
+            view.paper.x < a.x - 0.5
+                || view.paper.y < a.y - 0.5
+                || view.paper.x + view.paper.w > a.x + a.w + 0.5
+                || view.paper.y + view.paper.h > a.y + a.h + 0.5
+        });
+        let mask = if overflow {
+            canvas.and_then(|a| {
+                let mut m = tiny_skia::Mask::new(frame.width(), frame.height())?;
+                let path = PathBuilder::from_rect(tiny_skia::Rect::from_xywh(a.x, a.y, a.w, a.h)?);
+                m.fill_path(
+                    &path,
+                    tiny_skia::FillRule::Winding,
+                    true,
+                    Transform::identity(),
+                );
+                Some(m)
+            })
+        } else {
+            None
+        };
         Self::blit(
             &mut frame,
             &self.artwork_cache.as_ref().unwrap().1,
             view.paper.x,
             view.paper.y,
             view.scale,
+            mask.as_ref(),
         );
         if self.guides {
             let mut paint = Paint::default();
@@ -906,7 +1014,7 @@ impl Editor {
                         ..Default::default()
                     },
                     Transform::identity(),
-                    None,
+                    mask.as_ref(),
                 );
             }
         }
@@ -929,7 +1037,7 @@ impl Editor {
                         ..Default::default()
                     },
                     Transform::identity(),
-                    None,
+                    mask.as_ref(),
                 );
                 for (x, y) in [
                     (r.left(), r.top()),
@@ -938,7 +1046,7 @@ impl Editor {
                     (r.right(), r.bottom()),
                 ] {
                     if let Some(r) = tiny_skia::Rect::from_xywh(x - 2.5, y - 2.5, 5.0, 5.0) {
-                        frame.fill_rect(r, &paint, Transform::identity(), None);
+                        frame.fill_rect(r, &paint, Transform::identity(), mask.as_ref());
                     }
                 }
             }
@@ -951,7 +1059,14 @@ impl Editor {
         chip.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
         chip
     }
-    fn blit(dst: &mut Pixmap, src: &Pixmap, x: f32, y: f32, scale: f32) {
+    fn blit(
+        dst: &mut Pixmap,
+        src: &Pixmap,
+        x: f32,
+        y: f32,
+        scale: f32,
+        mask: Option<&tiny_skia::Mask>,
+    ) {
         dst.draw_pixmap(
             0,
             0,
@@ -961,7 +1076,7 @@ impl Editor {
                 ..Default::default()
             },
             Transform::from_scale(scale, scale).post_translate(x, y),
-            None,
+            mask,
         );
     }
     fn update(&mut self, edit: impl FnOnce(&mut Document)) -> Result<()> {
@@ -1238,6 +1353,17 @@ impl Editor {
                 self.status = "Redone.".into();
             }
             "guides" => self.guides = !self.guides,
+            "zoom" => {
+                self.zoom = match self.zoom {
+                    Zoom::Fit => Zoom::Selected,
+                    Zoom::Selected => Zoom::Fit,
+                };
+                self.status = match self.zoom {
+                    Zoom::Fit => "Zoom: whole artboard.",
+                    Zoom::Selected => "Zoom: selection fills the canvas.",
+                }
+                .into();
+            }
             "layers-up" => {
                 self.layer_offset = self.layer_offset.saturating_sub(2);
                 self.follow_selection = false;

@@ -1,7 +1,7 @@
 //! Controller/layout regression evidence. These are in-process controller
 //! checks, not the separate-process Eye/Hand acceptance demonstration.
 use crate::{
-    document::{Document, Kind},
+    document::{Document, Element, Kind},
     editor::{library_capacity, Editor},
 };
 use hamesh_core::Role;
@@ -628,6 +628,57 @@ fn colour_palette_applies_document_colours() {
     let px = pix.pixel(cx, cy).expect("swatch centre inside frame");
     let [r, g, b] = crate::document::rgb(&palette[0]).unwrap();
     assert_eq!((px.red(), px.green(), px.blue()), (r, g, b));
+}
+
+/// Selection zoom: the element centers in the canvas at the fitted
+/// scale, the heading names it, empty selection falls back to Fit,
+/// and the zoomed frame still renders clipped to the canvas.
+#[test]
+fn zoom_focus_centers_selection_and_clips_to_canvas() {
+    use crate::editor::selection_scale;
+    // Pure scale math, including the tiny-element clamp.
+    let tiny = Element::text("t", "T", 0., 0., 2., 2., 16., "#FFFFFF");
+    assert_eq!(selection_scale(940.0, 770.0, &tiny), 8.0);
+    let big = Element::text("b", "B", 0., 0., 200., 100., 16., "#FFFFFF");
+    assert!((selection_scale(940.0, 770.0, &big) - 4.5).abs() < 0.01);
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("zoom-focus.specimen.json");
+    editor.selected = Some("channel".into());
+    editor.action("zoom").unwrap();
+    let view = editor.view(1440, 980);
+    let area = view.layout.get("canvas").unwrap().rect.clone();
+    let e = editor
+        .history
+        .document
+        .elements
+        .iter()
+        .find(|x| x.id == "channel")
+        .unwrap()
+        .clone();
+    let expected = ((area.w - 40.0) / e.w)
+        .min((area.h - 32.0) / e.h)
+        .clamp(0.01, 8.0);
+    assert!((view.scale - expected).abs() < 0.01);
+    let (ecx, ecy) = (e.x + e.w / 2.0, e.y + e.h / 2.0);
+    assert!((view.paper.x + ecx * view.scale - (area.x + area.w / 2.0)).abs() < 1.0);
+    assert!((view.paper.y + ecy * view.scale - (area.y + area.h / 2.0)).abs() < 1.0);
+    let title = view
+        .app
+        .get("canvas-title")
+        .and_then(|c| c.props.get("text"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(title, "SELECTION / FIT");
+    // The zoomed frame renders clipped to the canvas size.
+    let pix = editor.render(&view).unwrap();
+    assert_eq!((pix.width(), pix.height()), (1440, 980));
+    // Nothing selected: honest Fit fallback at the same window.
+    editor.selected = None;
+    let view = editor.view(1440, 980);
+    let fit = ((area.w - 40.0) / 900.0)
+        .min((area.h - 32.0) / 1200.0)
+        .max(0.01);
+    assert!((view.scale - fit).abs() < 0.01);
 }
 
 /// Library capacity contract: fitted (layer rows, saved rows) for
