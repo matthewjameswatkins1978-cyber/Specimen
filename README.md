@@ -3,9 +3,8 @@
 **Make a poster, move some type, and see exactly what changed.**
 
 Specimen is a native Windows typography and graphic composition studio built with [Hamesh](https://github.com/matthewjameswatkins1978-cyber/hameshgui). It's a usable little design workbench and a real-world test of a larger idea: an agent should be able to inspect and operate the same interface as its human collaborator.
-Three editable starter compositions, text and geometric layers, typography
-and colour controls, canvas selection/dragging, alignment, stacking,
-100-step undo/redo, native JSON projects and full-resolution PNG export.
+
+Three editable starter compositions give you a place to begin. Add text and shapes, tune typography and colour, align and stack layers, undo or redo up to 100 steps, save native JSON projects, and export full-resolution PNG artwork.
 
 ## Try it
 
