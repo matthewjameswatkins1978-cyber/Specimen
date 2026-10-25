@@ -1,15 +1,19 @@
 # Specimen
 
-A Windows typography and graphic composition studio built with Hamesh.
+**Make a poster, move some type, and see exactly what changed.**
+
+Specimen is a native Windows typography and graphic composition studio built with [Hamesh](https://github.com/matthewjameswatkins1978-cyber/hameshgui). It's a usable little design workbench and a real-world test of a larger idea: an agent should be able to inspect and operate the same interface as its human collaborator.
 Three editable starter compositions, text and geometric layers, typography
 and colour controls, canvas selection/dragging, alignment, stacking,
 100-step undo/redo, native JSON projects and full-resolution PNG export.
 
-## Run
+## Try it
 
-Build the portable bundle with `scripts/package-portable.ps1`, unzip it and double-click **Launch Specimen.cmd**.
-It opens the native application and keeps projects/evidence beside the program.
-No Rust toolchain is needed for the portable build. Source development:
+The easiest way to start is the [Windows portable release v0.1.0](https://github.com/matthewjameswatkins1978-cyber/Specimen/releases/tag/v0.1.0). Download the ZIP, extract it, and double-click **Launch Specimen.cmd**. No Rust toolchain is needed to **run a prebuilt bundle**; projects and evidence stay beside the program.
+
+To **build** your own portable ZIP, install the stable Rust toolchain and Windows MSVC build tools, then run `powershell -File scripts/package-portable.ps1`. That script actually invokes Cargo before packaging; it does require Rust.
+
+Source development:
 
 ```powershell
 cargo run --bin specimen
@@ -113,8 +117,8 @@ Very long inspector text is clipped to its field; full text is retained in
 the model and Eye.
 
 See [architecture](docs/ARCHITECTURE.md), [native format](docs/FORMAT.md) and
-[Hamesh findings](docs/HAMESH-GAPS.md). Hamesh is pinned to
-`9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8`; no framework merge or release is part
+[Hamesh findings](docs/HAMESH-GAPS.md). Hamesh is pinned in `Cargo.toml` to
+`c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f`; no framework merge or release is part
 of this application.
 
 Original Specimen application code is MIT licensed. Reused upstream inspector
