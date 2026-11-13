@@ -6,6 +6,7 @@ mod editor;
 #[cfg(test)]
 mod editor_tests;
 mod inspect_srv;
+mod perf;
 
 use anyhow::{bail, Context, Result};
 use editor::Editor;
@@ -52,7 +53,25 @@ struct Host {
 }
 impl Host {
     fn view(&mut self) -> editor::View {
-        self.editor.view(self.size.0, self.size.1)
+        let t = std::time::Instant::now();
+        let v = self.editor.view(self.size.0, self.size.1);
+        self.editor.perf.view_calls += 1;
+        self.editor.perf.view_ns += crate::perf::ns_since(t);
+        v
+    }
+    /// Canvas scale for pointer tracking. `view_scale_*` counters are a
+    /// subset of `view_*`: they exist so a build issued for one scalar
+    /// stays visible in the totals.
+    fn view_scale(&mut self) -> f32 {
+        let t = std::time::Instant::now();
+        let v = self.editor.view(self.size.0, self.size.1);
+        let s = v.scale;
+        self.editor.perf.view_calls += 1;
+        let n = crate::perf::ns_since(t);
+        self.editor.perf.view_ns += n;
+        self.editor.perf.view_scale_calls += 1;
+        self.editor.perf.view_scale_ns += n;
+        s
     }
     fn ok(&self, mut v: serde_json::Value) -> OpOutcome {
         if let Some(o) = v.as_object_mut() {
@@ -78,12 +97,21 @@ impl Host {
         })
     }
     fn record(&mut self, kind: &str, message: &str) {
+        let t = std::time::Instant::now();
         self.trace.record(kind, message, self.editor.revision, None);
         if let Err(e) = std::fs::write(
             self.evidence.join("interaction-trace.json"),
             self.trace.export_json(),
         ) {
             eprintln!("trace: {e}");
+        }
+        self.editor.perf.record_calls += 1;
+        self.editor.perf.record_ns += crate::perf::ns_since(t);
+        // Stage counters are flushed with the trace, so measurement adds
+        // no per-frame file IO; the flush itself stays outside record_ns.
+        let snapshot = self.editor.perf.snapshot_json();
+        if let Err(e) = std::fs::write(self.evidence.join("perf.json"), snapshot) {
+            eprintln!("perf: {e}");
         }
     }
     fn report(&mut self, r: Result<()>) {
@@ -479,7 +507,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 if !self.editor.dragging() {
                     return;
                 }
-                let scale = self.view().scale;
+                let scale = self.view_scale();
                 let before = self.editor.revision;
                 self.editor
                     .pointer_move(self.cursor.0, self.cursor.1, scale);
@@ -542,7 +570,11 @@ impl ApplicationHandler<UserEvent> for Host {
             }
             WindowEvent::RedrawRequested => {
                 let view = self.view();
-                match self.editor.render(&view) {
+                let t = std::time::Instant::now();
+                let rendered = self.editor.render(&view);
+                let render_n = crate::perf::ns_since(t);
+                self.editor.perf.render_ns += render_n;
+                match rendered {
                     Ok(pix) => {
                         if let Some(surface) = &mut self.surface {
                             if let (Some(w), Some(h)) =
@@ -554,12 +586,18 @@ impl ApplicationHandler<UserEvent> for Host {
                                 }
                                 match surface.buffer_mut() {
                                     Ok(mut buffer) => {
+                                        let t = std::time::Instant::now();
                                         for (dst, p) in buffer.iter_mut().zip(pix.pixels()) {
                                             *dst = ((p.red() as u32) << 16)
                                                 | ((p.green() as u32) << 8)
                                                 | p.blue() as u32;
                                         }
-                                        if let Err(e) = buffer.present() {
+                                        self.editor.perf.convert_ns += crate::perf::ns_since(t);
+                                        let t = std::time::Instant::now();
+                                        let presented = buffer.present();
+                                        self.editor.perf.present_ns += crate::perf::ns_since(t);
+                                        self.editor.perf.frames += 1;
+                                        if let Err(e) = presented {
                                             eprintln!("present: {e}")
                                         }
                                     }

@@ -62,6 +62,8 @@ pub struct Editor {
     artwork_cache: Option<(String, Pixmap)>,
     thumbnails: Vec<Pixmap>,
     pub fonts: Vec<String>,
+    /// Cumulative responsiveness stage counters; see crate::perf.
+    pub perf: crate::perf::Perf,
 }
 
 fn panel(
@@ -253,6 +255,7 @@ impl Editor {
             artwork_cache: None,
             thumbnails,
             fonts: artwork::fonts(),
+            perf: Default::default(),
         })
     }
     pub fn dragging(&self) -> bool {
@@ -1061,7 +1064,11 @@ impl Editor {
         }
     }
     pub fn render(&mut self, view: &View) -> Result<Pixmap> {
+        let t_all = std::time::Instant::now();
+        let t = std::time::Instant::now();
         let mut frame = hamesh_render::render(&view.scene).pixmap;
+        let chrome_n = crate::perf::ns_since(t);
+        self.perf.chrome_ns += chrome_n;
         for (i, p) in self.thumbnails.iter().enumerate().take(3) {
             if let Some(n) = view.layout.get(&format!("template-{i}")) {
                 let r = &n.rect;
@@ -1094,9 +1101,21 @@ impl Editor {
                 );
             }
         }
+        let t = std::time::Instant::now();
         let key = self.fingerprint();
+        let fingerprint_n = crate::perf::ns_since(t);
+        self.perf.fingerprint_ns += fingerprint_n;
+        let artwork_n;
         if self.artwork_cache.as_ref().map(|(k, _)| k) != Some(&key) {
-            self.artwork_cache = Some((key, artwork::render(&self.history.document)?));
+            let t = std::time::Instant::now();
+            let pix = artwork::render(&self.history.document)?;
+            artwork_n = crate::perf::ns_since(t);
+            self.perf.artwork_ns += artwork_n;
+            self.perf.artwork_misses += 1;
+            self.artwork_cache = Some((key, pix));
+        } else {
+            artwork_n = 0;
+            self.perf.artwork_hits += 1;
         }
         // Clip paper-space paint to the canvas area whenever the
         // zoomed paper overflows it. Fit mode never takes this path,
@@ -1108,6 +1127,7 @@ impl Editor {
                 || view.paper.x + view.paper.w > a.x + a.w + 0.5
                 || view.paper.y + view.paper.h > a.y + a.h + 0.5
         });
+        let t = std::time::Instant::now();
         let mask = if overflow {
             canvas.and_then(|a| {
                 let mut m = tiny_skia::Mask::new(frame.width(), frame.height())?;
@@ -1123,6 +1143,8 @@ impl Editor {
         } else {
             None
         };
+        let mask_n = crate::perf::ns_since(t);
+        self.perf.mask_ns += mask_n;
         Self::blit(
             &mut frame,
             &self.artwork_cache.as_ref().unwrap().1,
@@ -1184,6 +1206,9 @@ impl Editor {
                 }
             }
         }
+        let rest = crate::perf::ns_since(t_all)
+            .saturating_sub(chrome_n + fingerprint_n + artwork_n + mask_n);
+        self.perf.composite_ns += rest;
         Ok(frame)
     }
     fn solid_chip(hex: &str) -> Pixmap {
