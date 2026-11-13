@@ -1062,9 +1062,8 @@ impl Editor {
     }
     pub fn render(&mut self, view: &View) -> Result<Pixmap> {
         let mut frame = hamesh_render::render(&view.scene).pixmap;
-        for i in 0..3 {
+        for (i, p) in self.thumbnails.iter().enumerate().take(3) {
             if let Some(n) = view.layout.get(&format!("template-{i}")) {
-                let p = &self.thumbnails[i];
                 let r = &n.rect;
                 let scale = ((r.w - 12.0) / p.width() as f32).min((r.h - 10.0) / p.height() as f32);
                 Self::blit(
