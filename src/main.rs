@@ -496,6 +496,10 @@ impl ApplicationHandler<UserEvent> for Host {
             WindowEvent::Resized(size) => {
                 self.size = (size.width.max(1), size.height.max(1));
                 self.editor.revision += 1;
+                if self.editor.dragging() {
+                    let s = self.view_scale();
+                    self.editor.refresh_drag_scale(s);
+                }
                 self.record("window.resize", &format!("{}x{}", self.size.0, self.size.1));
                 if let Some(w) = &self.window {
                     w.request_redraw()
@@ -507,10 +511,14 @@ impl ApplicationHandler<UserEvent> for Host {
                 if !self.editor.dragging() {
                     return;
                 }
-                let scale = self.view_scale();
+                // No view build per mouse move: the drag carries the scale
+                // captured at press time.
                 let before = self.editor.revision;
-                self.editor
-                    .pointer_move(self.cursor.0, self.cursor.1, scale);
+                let t = std::time::Instant::now();
+                self.editor.pointer_move(self.cursor.0, self.cursor.1);
+                let n = crate::perf::ns_since(t);
+                self.editor.perf.pointer_move_calls += 1;
+                self.editor.perf.pointer_move_ns += n;
                 if before != self.editor.revision {
                     if let Some(w) = &self.window {
                         w.request_redraw()

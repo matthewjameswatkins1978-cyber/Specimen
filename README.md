@@ -117,7 +117,7 @@ the model and Eye.
 
 See [architecture](docs/ARCHITECTURE.md), [native format](docs/FORMAT.md) and
 [Hamesh findings](docs/HAMESH-GAPS.md). Hamesh is pinned in `Cargo.toml` to
-`c5b794c35fb97fd067c5cf7be7e5d75b9a19b49f`; no framework merge or release is part
+`53b0b96b7a1897737cb08e2139f62c07815d4817`; no framework merge or release is part
 of this application.
 
 Original Specimen application code is MIT licensed. Reused upstream inspector

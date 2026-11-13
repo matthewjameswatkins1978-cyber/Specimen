@@ -23,6 +23,10 @@ struct Drag {
     before: Document,
     start: (f32, f32),
     origin: (f32, f32),
+    /// Canvas scale captured from the real view when the press started the
+    /// drag. Layout cannot change while one pointer is held down, so pointer
+    /// tracking must not rebuild the tree, layout and scene for every move.
+    scale: f32,
 }
 /// Canvas zoom: whole artboard, or the selection fitted to the
 /// canvas. Selection zoom reuses the paper transform, so hit-testing,
@@ -263,6 +267,13 @@ impl Editor {
     }
     pub fn fingerprint(&self) -> String {
         serde_json::to_string(&self.history.document).unwrap_or_default()
+    }
+    /// Bytes of the resident full-resolution poster. Tests assert cache
+    /// invalidation here rather than on whole frames, which also carry
+    /// chrome, status text and the selection overlay.
+    #[cfg(test)]
+    pub(crate) fn cached_artwork(&self) -> Option<&[u8]> {
+        self.artwork_cache.as_ref().map(|(_, p)| p.data())
     }
     pub fn dirty(&self) -> bool {
         self.saved != self.save_identity()
@@ -1069,6 +1080,7 @@ impl Editor {
         let mut frame = hamesh_render::render(&view.scene).pixmap;
         let chrome_n = crate::perf::ns_since(t);
         self.perf.chrome_ns += chrome_n;
+        let t_thumbs = std::time::Instant::now();
         for (i, p) in self.thumbnails.iter().enumerate().take(3) {
             if let Some(n) = view.layout.get(&format!("template-{i}")) {
                 let r = &n.rect;
@@ -1083,8 +1095,10 @@ impl Editor {
                 );
             }
         }
+        self.perf.thumbs_ns += crate::perf::ns_since(t_thumbs);
         // Palette chips paint over their buttons, the same precedent
         // as the template thumbnails: the button stays the hit target.
+        let t_palette = std::time::Instant::now();
         for (i, hex) in self.palette().iter().enumerate() {
             if let Some(n) = view.layout.get(&format!("swatch-{i}")) {
                 let chip = Self::solid_chip(hex);
@@ -1101,6 +1115,7 @@ impl Editor {
                 );
             }
         }
+        self.perf.palette_ns += crate::perf::ns_since(t_palette);
         let t = std::time::Instant::now();
         let key = self.fingerprint();
         let fingerprint_n = crate::perf::ns_since(t);
@@ -1145,6 +1160,7 @@ impl Editor {
         };
         let mask_n = crate::perf::ns_since(t);
         self.perf.mask_ns += mask_n;
+        let t = std::time::Instant::now();
         Self::blit(
             &mut frame,
             &self.artwork_cache.as_ref().unwrap().1,
@@ -1153,6 +1169,8 @@ impl Editor {
             view.scale,
             mask.as_ref(),
         );
+        self.perf.art_blit_ns += crate::perf::ns_since(t);
+        let t_overlay = std::time::Instant::now();
         if self.guides {
             let mut paint = Paint::default();
             paint.set_color_rgba8(120, 220, 200, 90);
@@ -1206,6 +1224,7 @@ impl Editor {
                 }
             }
         }
+        self.perf.overlay_ns += crate::perf::ns_since(t_overlay);
         let rest = crate::perf::ns_since(t_all)
             .saturating_sub(chrome_n + fingerprint_n + artwork_n + mask_n);
         self.perf.composite_ns += rest;
@@ -1411,6 +1430,7 @@ impl Editor {
                     before: self.history.document.clone(),
                     start: (x, y),
                     origin: (e.x, e.y),
+                    scale: view.scale,
                 });
             }
             self.status = if self.selected.is_some() {
@@ -1425,13 +1445,14 @@ impl Editor {
         }
         Ok(Some(hit))
     }
-    pub fn pointer_move(&mut self, x: f32, y: f32, scale: f32) {
+    pub fn pointer_move(&mut self, x: f32, y: f32) {
         let Some(drag) = self.drag.as_ref() else {
             return;
         };
         let Some(id) = self.selected.as_ref() else {
             return;
         };
+        let scale = drag.scale;
         let mut nx = drag.origin.0 + (x - drag.start.0) / scale;
         let mut ny = drag.origin.1 + (y - drag.start.1) / scale;
         if self.guides {
@@ -1445,9 +1466,23 @@ impl Editor {
             .iter_mut()
             .find(|e| &e.id == id)
         {
-            e.x = nx.clamp(0.0, (self.history.document.width as f32 - e.w).max(0.0));
-            e.y = ny.clamp(0.0, (self.history.document.height as f32 - e.h).max(0.0));
-            self.revision += 1;
+            let px = nx.clamp(0.0, (self.history.document.width as f32 - e.w).max(0.0));
+            let py = ny.clamp(0.0, (self.history.document.height as f32 - e.h).max(0.0));
+            // Snapping or clamping can land the layer exactly where it
+            // already is. A no-op move must not bump the revision, or every
+            // mouse move forces a full frame rebuild for nothing.
+            if e.x != px || e.y != py {
+                e.x = px;
+                e.y = py;
+                self.revision += 1;
+            }
+        }
+    }
+    /// Re-sync an active drag after the window size changes, which is the
+    /// only thing that can move the paper while a pointer is held down.
+    pub fn refresh_drag_scale(&mut self, scale: f32) {
+        if let Some(drag) = self.drag.as_mut() {
+            drag.scale = scale;
         }
     }
     pub fn release(&mut self) -> Result<()> {

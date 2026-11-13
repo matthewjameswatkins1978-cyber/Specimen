@@ -27,6 +27,9 @@ pub struct Perf {
     /// View builds issued only to read the canvas scale during pointer tracking.
     pub view_scale_calls: u64,
     pub view_scale_ns: u64,
+    /// `Editor::pointer_move` invocations while dragging.
+    pub pointer_move_calls: u64,
+    pub pointer_move_ns: u64,
     /// Host trace serialisation and file write.
     pub record_calls: u64,
     pub record_ns: u64,
@@ -44,6 +47,14 @@ pub struct Perf {
     pub artwork_misses: u64,
     /// Thumbnails, palette chips, artwork blit, guides and selection overlay.
     pub composite_ns: u64,
+    /// Library template thumbnail blits.
+    pub thumbs_ns: u64,
+    /// Colour-swatch chip blits.
+    pub palette_ns: u64,
+    /// Full artwork blit onto the frame, including its scale to the paper.
+    pub art_blit_ns: u64,
+    /// Guides and selection overlay strokes.
+    pub overlay_ns: u64,
     /// Zoom/clipping mask construction.
     pub mask_ns: u64,
     /// Pixmap to softbuffer pixel conversion.
@@ -66,6 +77,8 @@ impl Perf {
             "view_ns": self.view_ns,
             "view_scale_calls": self.view_scale_calls,
             "view_scale_ns": self.view_scale_ns,
+            "pointer_move_calls": self.pointer_move_calls,
+            "pointer_move_ns": self.pointer_move_ns,
             "record_calls": self.record_calls,
             "record_ns": self.record_ns,
             "render_ns": self.render_ns,
@@ -75,6 +88,10 @@ impl Perf {
             "artwork_hits": self.artwork_hits,
             "artwork_misses": self.artwork_misses,
             "composite_ns": self.composite_ns,
+            "thumbs_ns": self.thumbs_ns,
+            "palette_ns": self.palette_ns,
+            "art_blit_ns": self.art_blit_ns,
+            "overlay_ns": self.overlay_ns,
             "mask_ns": self.mask_ns,
             "convert_ns": self.convert_ns,
             "present_ns": self.present_ns,
