@@ -23,6 +23,10 @@ struct Drag {
     before: Document,
     start: (f32, f32),
     origin: (f32, f32),
+    /// Canvas scale captured from the real view when the press started the
+    /// drag. Layout cannot change while one pointer is held down, so pointer
+    /// tracking must not rebuild the tree, layout and scene for every move.
+    scale: f32,
 }
 /// Canvas zoom: whole artboard, or the selection fitted to the
 /// canvas. Selection zoom reuses the paper transform, so hit-testing,
@@ -62,6 +66,8 @@ pub struct Editor {
     artwork_cache: Option<(String, Pixmap)>,
     thumbnails: Vec<Pixmap>,
     pub fonts: Vec<String>,
+    /// Cumulative responsiveness stage counters; see crate::perf.
+    pub perf: crate::perf::Perf,
 }
 
 fn panel(
@@ -253,6 +259,7 @@ impl Editor {
             artwork_cache: None,
             thumbnails,
             fonts: artwork::fonts(),
+            perf: Default::default(),
         })
     }
     pub fn dragging(&self) -> bool {
@@ -260,6 +267,13 @@ impl Editor {
     }
     pub fn fingerprint(&self) -> String {
         serde_json::to_string(&self.history.document).unwrap_or_default()
+    }
+    /// Bytes of the resident full-resolution poster. Tests assert cache
+    /// invalidation here rather than on whole frames, which also carry
+    /// chrome, status text and the selection overlay.
+    #[cfg(test)]
+    pub(crate) fn cached_artwork(&self) -> Option<&[u8]> {
+        self.artwork_cache.as_ref().map(|(_, p)| p.data())
     }
     pub fn dirty(&self) -> bool {
         self.saved != self.save_identity()
@@ -397,6 +411,7 @@ impl Editor {
         });
     }
     pub fn view(&mut self, width: u32, height: u32) -> View {
+        let t_app = std::time::Instant::now();
         let mut app = App::new("specimen");
         app.get_mut("specimen").unwrap().props.extend([
             ("pad".into(), "0".into()),
@@ -931,7 +946,10 @@ impl Editor {
             }
         }
         app.revision = self.revision;
+        self.perf.view_app_ns += crate::perf::ns_since(t_app);
+        let t_layout = std::time::Instant::now();
         let mut layout = hamesh_layout::compute(&app, width as f32, height as f32);
+        self.perf.view_layout_ns += crate::perf::ns_since(t_layout);
         let area = layout.get("canvas").unwrap().rect.clone();
         let d = &self.history.document;
         let fit = ((area.w - 40.0) / d.width as f32)
@@ -1012,6 +1030,7 @@ impl Editor {
         }
         // Read-only document geometry in the Eye. Ghost nodes paint nothing and
         // never intercept Hamesh's pointer dispatch. Canvas stacking stays canonical.
+        let t_ghost = std::time::Instant::now();
         for (i, e) in d.elements.iter().enumerate() {
             let id = format!("art-{}", e.id);
             let c = Component::new(&id, Role::Other("ArtworkElement".into()), &e.name)
@@ -1047,7 +1066,10 @@ impl Editor {
                 },
             );
         }
+        self.perf.view_ghost_ns += crate::perf::ns_since(t_ghost);
+        let t_scene = std::time::Instant::now();
         let scene = hamesh_scene::build(&app, &layout, self.revision);
+        self.perf.view_scene_ns += crate::perf::ns_since(t_scene);
         // Commit the displayed window: paging acts on what is shown,
         // not a stale stored offset. Selection-follow re-arms only on
         // selection change; every other path re-derives the same start.
@@ -1061,10 +1083,14 @@ impl Editor {
         }
     }
     pub fn render(&mut self, view: &View) -> Result<Pixmap> {
+        let t_all = std::time::Instant::now();
+        let t = std::time::Instant::now();
         let mut frame = hamesh_render::render(&view.scene).pixmap;
-        for i in 0..3 {
+        let chrome_n = crate::perf::ns_since(t);
+        self.perf.chrome_ns += chrome_n;
+        let t_thumbs = std::time::Instant::now();
+        for (i, p) in self.thumbnails.iter().enumerate().take(3) {
             if let Some(n) = view.layout.get(&format!("template-{i}")) {
-                let p = &self.thumbnails[i];
                 let r = &n.rect;
                 let scale = ((r.w - 12.0) / p.width() as f32).min((r.h - 10.0) / p.height() as f32);
                 Self::blit(
@@ -1077,8 +1103,10 @@ impl Editor {
                 );
             }
         }
+        self.perf.thumbs_ns += crate::perf::ns_since(t_thumbs);
         // Palette chips paint over their buttons, the same precedent
         // as the template thumbnails: the button stays the hit target.
+        let t_palette = std::time::Instant::now();
         for (i, hex) in self.palette().iter().enumerate() {
             if let Some(n) = view.layout.get(&format!("swatch-{i}")) {
                 let chip = Self::solid_chip(hex);
@@ -1095,9 +1123,22 @@ impl Editor {
                 );
             }
         }
+        self.perf.palette_ns += crate::perf::ns_since(t_palette);
+        let t = std::time::Instant::now();
         let key = self.fingerprint();
+        let fingerprint_n = crate::perf::ns_since(t);
+        self.perf.fingerprint_ns += fingerprint_n;
+        let artwork_n;
         if self.artwork_cache.as_ref().map(|(k, _)| k) != Some(&key) {
-            self.artwork_cache = Some((key, artwork::render(&self.history.document)?));
+            let t = std::time::Instant::now();
+            let pix = artwork::render(&self.history.document)?;
+            artwork_n = crate::perf::ns_since(t);
+            self.perf.artwork_ns += artwork_n;
+            self.perf.artwork_misses += 1;
+            self.artwork_cache = Some((key, pix));
+        } else {
+            artwork_n = 0;
+            self.perf.artwork_hits += 1;
         }
         // Clip paper-space paint to the canvas area whenever the
         // zoomed paper overflows it. Fit mode never takes this path,
@@ -1109,6 +1150,7 @@ impl Editor {
                 || view.paper.x + view.paper.w > a.x + a.w + 0.5
                 || view.paper.y + view.paper.h > a.y + a.h + 0.5
         });
+        let t = std::time::Instant::now();
         let mask = if overflow {
             canvas.and_then(|a| {
                 let mut m = tiny_skia::Mask::new(frame.width(), frame.height())?;
@@ -1124,6 +1166,9 @@ impl Editor {
         } else {
             None
         };
+        let mask_n = crate::perf::ns_since(t);
+        self.perf.mask_ns += mask_n;
+        let t = std::time::Instant::now();
         Self::blit(
             &mut frame,
             &self.artwork_cache.as_ref().unwrap().1,
@@ -1132,6 +1177,8 @@ impl Editor {
             view.scale,
             mask.as_ref(),
         );
+        self.perf.art_blit_ns += crate::perf::ns_since(t);
+        let t_overlay = std::time::Instant::now();
         if self.guides {
             let mut paint = Paint::default();
             paint.set_color_rgba8(120, 220, 200, 90);
@@ -1185,6 +1232,10 @@ impl Editor {
                 }
             }
         }
+        self.perf.overlay_ns += crate::perf::ns_since(t_overlay);
+        let rest = crate::perf::ns_since(t_all)
+            .saturating_sub(chrome_n + fingerprint_n + artwork_n + mask_n);
+        self.perf.composite_ns += rest;
         Ok(frame)
     }
     fn solid_chip(hex: &str) -> Pixmap {
@@ -1387,7 +1438,9 @@ impl Editor {
                     before: self.history.document.clone(),
                     start: (x, y),
                     origin: (e.x, e.y),
+                    scale: view.scale,
                 });
+                self.perf.drag_starts += 1;
             }
             self.status = if self.selected.is_some() {
                 "Selected artwork. Drag or use the inspector.".into()
@@ -1401,13 +1454,14 @@ impl Editor {
         }
         Ok(Some(hit))
     }
-    pub fn pointer_move(&mut self, x: f32, y: f32, scale: f32) {
+    pub fn pointer_move(&mut self, x: f32, y: f32) {
         let Some(drag) = self.drag.as_ref() else {
             return;
         };
         let Some(id) = self.selected.as_ref() else {
             return;
         };
+        let scale = drag.scale;
         let mut nx = drag.origin.0 + (x - drag.start.0) / scale;
         let mut ny = drag.origin.1 + (y - drag.start.1) / scale;
         if self.guides {
@@ -1421,9 +1475,28 @@ impl Editor {
             .iter_mut()
             .find(|e| &e.id == id)
         {
-            e.x = nx.clamp(0.0, (self.history.document.width as f32 - e.w).max(0.0));
-            e.y = ny.clamp(0.0, (self.history.document.height as f32 - e.h).max(0.0));
-            self.revision += 1;
+            let px = nx.clamp(0.0, (self.history.document.width as f32 - e.w).max(0.0));
+            let py = ny.clamp(0.0, (self.history.document.height as f32 - e.h).max(0.0));
+            // Snapping or clamping can land the layer exactly where it
+            // already is. A no-op move must not bump the revision, or every
+            // mouse move forces a full frame rebuild for nothing.
+            let mut moved = false;
+            if e.x != px || e.y != py {
+                e.x = px;
+                e.y = py;
+                self.revision += 1;
+                moved = true;
+            }
+            if moved {
+                self.perf.last_bump = Some(std::time::Instant::now());
+            }
+        }
+    }
+    /// Re-sync an active drag after the window size changes, which is the
+    /// only thing that can move the paper while a pointer is held down.
+    pub fn refresh_drag_scale(&mut self, scale: f32) {
+        if let Some(drag) = self.drag.as_mut() {
+            drag.scale = scale;
         }
     }
     pub fn release(&mut self) -> Result<()> {

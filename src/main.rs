@@ -6,6 +6,7 @@ mod editor;
 #[cfg(test)]
 mod editor_tests;
 mod inspect_srv;
+mod perf;
 
 use anyhow::{bail, Context, Result};
 use editor::Editor;
@@ -52,7 +53,25 @@ struct Host {
 }
 impl Host {
     fn view(&mut self) -> editor::View {
-        self.editor.view(self.size.0, self.size.1)
+        let t = std::time::Instant::now();
+        let v = self.editor.view(self.size.0, self.size.1);
+        self.editor.perf.view_calls += 1;
+        self.editor.perf.view_ns += crate::perf::ns_since(t);
+        v
+    }
+    /// Canvas scale for pointer tracking. `view_scale_*` counters are a
+    /// subset of `view_*`: they exist so a build issued for one scalar
+    /// stays visible in the totals.
+    fn view_scale(&mut self) -> f32 {
+        let t = std::time::Instant::now();
+        let v = self.editor.view(self.size.0, self.size.1);
+        let s = v.scale;
+        self.editor.perf.view_calls += 1;
+        let n = crate::perf::ns_since(t);
+        self.editor.perf.view_ns += n;
+        self.editor.perf.view_scale_calls += 1;
+        self.editor.perf.view_scale_ns += n;
+        s
     }
     fn ok(&self, mut v: serde_json::Value) -> OpOutcome {
         if let Some(o) = v.as_object_mut() {
@@ -78,12 +97,21 @@ impl Host {
         })
     }
     fn record(&mut self, kind: &str, message: &str) {
+        let t = std::time::Instant::now();
         self.trace.record(kind, message, self.editor.revision, None);
         if let Err(e) = std::fs::write(
             self.evidence.join("interaction-trace.json"),
             self.trace.export_json(),
         ) {
             eprintln!("trace: {e}");
+        }
+        self.editor.perf.record_calls += 1;
+        self.editor.perf.record_ns += crate::perf::ns_since(t);
+        // Stage counters are flushed with the trace, so measurement adds
+        // no per-frame file IO; the flush itself stays outside record_ns.
+        let snapshot = self.editor.perf.snapshot_json();
+        if let Err(e) = std::fs::write(self.evidence.join("perf.json"), snapshot) {
+            eprintln!("perf: {e}");
         }
     }
     fn report(&mut self, r: Result<()>) {
@@ -170,7 +198,19 @@ impl Host {
     }
     fn press(&mut self, x: f32, y: f32, release: bool) -> Result<Option<String>> {
         let mut view = self.view();
-        let hit = self.editor.press(&mut view, x, y)?;
+        self.press_in(&mut view, x, y, release)
+    }
+    /// Press using an already-built view of the current revision and size.
+    /// Callers that built a view for hit-testing must reuse it here instead
+    /// of rebuilding the unchanged chrome twice for one operator action.
+    fn press_in(
+        &mut self,
+        view: &mut editor::View,
+        x: f32,
+        y: f32,
+        release: bool,
+    ) -> Result<Option<String>> {
+        let hit = self.editor.press(view, x, y)?;
         if release {
             self.editor.release()?;
         }
@@ -196,7 +236,7 @@ impl Host {
                 if let Some(e) = self.stale(expect_rev) {
                     e
                 } else {
-                    let target_view = self.view();
+                    let mut target_view = self.view();
                     let actionable = target_view.app.get(&id).is_some_and(|c| {
                         c.enabled
                             && (matches!(
@@ -211,7 +251,7 @@ impl Host {
                         .map(|n| (n.rect.x + n.rect.w / 2.0, n.rect.y + n.rect.h / 2.0));
                     match center {
                         None => self.err("NOT_FOUND", id),
-                        Some((x, y)) => match self.press(x, y, true) {
+                        Some((x, y)) => match self.press_in(&mut target_view, x, y, true) {
                             Ok(hit) => {
                                 self.record(
                                     "ext.click",
@@ -270,13 +310,13 @@ impl Host {
                 }
             }
             Op::Type { id, text } => {
-                let view = self.view();
+                let mut view = self.view();
                 let target = view.app.get(&id);
                 if !target.is_some_and(|c| c.role == hamesh_core::Role::TextInput) {
                     self.err("BAD_OP", "type requires an ordinary text input")
                 } else {
                     let r = view.layout.get(&id).unwrap().rect.clone();
-                    match self.press(r.x + r.w / 2.0, r.y + r.h / 2.0, true) {
+                    match self.press_in(&mut view, r.x + r.w / 2.0, r.y + r.h / 2.0, true) {
                         Ok(Some(hit)) if hit == id => match self.editor.insert(&text) {
                             Ok(()) => {
                                 self.record("ext.type",&format!("HumanEquivalent focused={id}; {} characters via shared Composer path",text.chars().count()));
@@ -468,6 +508,10 @@ impl ApplicationHandler<UserEvent> for Host {
             WindowEvent::Resized(size) => {
                 self.size = (size.width.max(1), size.height.max(1));
                 self.editor.revision += 1;
+                if self.editor.dragging() {
+                    let s = self.view_scale();
+                    self.editor.refresh_drag_scale(s);
+                }
                 self.record("window.resize", &format!("{}x{}", self.size.0, self.size.1));
                 if let Some(w) = &self.window {
                     w.request_redraw()
@@ -479,10 +523,14 @@ impl ApplicationHandler<UserEvent> for Host {
                 if !self.editor.dragging() {
                     return;
                 }
-                let scale = self.view().scale;
+                // No view build per mouse move: the drag carries the scale
+                // captured at press time.
                 let before = self.editor.revision;
-                self.editor
-                    .pointer_move(self.cursor.0, self.cursor.1, scale);
+                let t = std::time::Instant::now();
+                self.editor.pointer_move(self.cursor.0, self.cursor.1);
+                let n = crate::perf::ns_since(t);
+                self.editor.perf.pointer_move_calls += 1;
+                self.editor.perf.pointer_move_ns += n;
                 if before != self.editor.revision {
                     if let Some(w) = &self.window {
                         w.request_redraw()
@@ -542,7 +590,11 @@ impl ApplicationHandler<UserEvent> for Host {
             }
             WindowEvent::RedrawRequested => {
                 let view = self.view();
-                match self.editor.render(&view) {
+                let t = std::time::Instant::now();
+                let rendered = self.editor.render(&view);
+                let render_n = crate::perf::ns_since(t);
+                self.editor.perf.render_ns += render_n;
+                match rendered {
                     Ok(pix) => {
                         if let Some(surface) = &mut self.surface {
                             if let (Some(w), Some(h)) =
@@ -554,12 +606,23 @@ impl ApplicationHandler<UserEvent> for Host {
                                 }
                                 match surface.buffer_mut() {
                                     Ok(mut buffer) => {
+                                        let t = std::time::Instant::now();
                                         for (dst, p) in buffer.iter_mut().zip(pix.pixels()) {
                                             *dst = ((p.red() as u32) << 16)
                                                 | ((p.green() as u32) << 8)
                                                 | p.blue() as u32;
                                         }
-                                        if let Err(e) = buffer.present() {
+                                        self.editor.perf.convert_ns += crate::perf::ns_since(t);
+                                        let t = std::time::Instant::now();
+                                        let presented = buffer.present();
+                                        self.editor.perf.present_ns += crate::perf::ns_since(t);
+                                        self.editor.perf.frames += 1;
+                                        if let Some(t0) = self.editor.perf.last_bump.take() {
+                                            self.editor.perf.input_to_present_ns +=
+                                                crate::perf::ns_since(t0);
+                                            self.editor.perf.input_to_present_samples += 1;
+                                        }
+                                        if let Err(e) = presented {
                                             eprintln!("present: {e}")
                                         }
                                     }

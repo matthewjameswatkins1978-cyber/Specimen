@@ -250,11 +250,7 @@ fn a_drag_routes_through_hamesh_hit_testing_and_creates_one_history_step() {
     );
     assert_eq!(editor.selected.as_deref(), Some("title"));
     for (dx, dy) in [(8., 10.), (16., 20.), (24., 32.)] {
-        editor.pointer_move(
-            start.0 + dx * view.scale,
-            start.1 + dy * view.scale,
-            view.scale,
-        );
+        editor.pointer_move(start.0 + dx * view.scale, start.1 + dy * view.scale);
     }
     editor.release().unwrap();
     let after = editor.history.document.clone();
@@ -269,6 +265,210 @@ fn a_drag_routes_through_hamesh_hit_testing_and_creates_one_history_step() {
     );
     editor.action("redo").unwrap();
     assert_eq!(editor.history.document, after);
+}
+
+#[test]
+fn pointer_move_only_bumps_the_revision_when_the_layer_actually_moves() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("noop-drag.specimen.json");
+    editor.guides = false;
+    let mut view = editor.view(1440, 980);
+    let title = editor
+        .history
+        .document
+        .elements
+        .iter()
+        .find(|e| e.id == "title")
+        .unwrap()
+        .clone();
+    let start = (
+        view.paper.x + (title.x + 100.) * view.scale,
+        view.paper.y + (title.y + 50.) * view.scale,
+    );
+    assert_eq!(
+        editor
+            .press(&mut view, start.0, start.1)
+            .unwrap()
+            .as_deref(),
+        Some("canvas")
+    );
+    assert_eq!(editor.selected.as_deref(), Some("title"));
+
+    // No travel: the layer cannot move, so the revision must stay put.
+    let still = editor.revision;
+    editor.pointer_move(start.0, start.1);
+    assert_eq!(
+        editor.revision, still,
+        "an unmoved pointer must not bump the revision"
+    );
+
+    // Pushing far past the artboard edge really does move it, then clamps.
+    editor.pointer_move(
+        start.0 + 100_000.0 * view.scale,
+        start.1 + 100_000.0 * view.scale,
+    );
+    let clamped = editor.revision;
+    assert!(clamped > still, "a real move must bump the revision");
+    {
+        let e = editor
+            .history
+            .document
+            .elements
+            .iter()
+            .find(|e| e.id == "title")
+            .unwrap();
+        let max_x = (editor.history.document.width as f32 - e.w).max(0.0);
+        let max_y = (editor.history.document.height as f32 - e.h).max(0.0);
+        assert!(
+            (e.x - max_x).abs() < 0.01 && (e.y - max_y).abs() < 0.01,
+            "layer must sit on the artboard edge"
+        );
+    }
+
+    // Already at the edge: pushing further is a clamped no-op.
+    editor.pointer_move(
+        start.0 + 200_000.0 * view.scale,
+        start.1 + 200_000.0 * view.scale,
+    );
+    assert_eq!(
+        editor.revision, clamped,
+        "clamping against the edge must not bump the revision"
+    );
+
+    // One drag still commits as exactly one history step.
+    editor.release().unwrap();
+    assert!(
+        editor.history.can_undo(),
+        "the drag must leave one undo step"
+    );
+    editor.action("undo").unwrap();
+    let back = editor
+        .history
+        .document
+        .elements
+        .iter()
+        .find(|e| e.id == "title")
+        .unwrap();
+    assert!((back.x - title.x).abs() < 0.01 && (back.y - title.y).abs() < 0.01);
+    assert!(
+        !editor.history.can_undo(),
+        "a drag must not split into several steps"
+    );
+}
+
+#[test]
+fn drag_keeps_the_canvas_scale_captured_when_it_started() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("drag-scale.specimen.json");
+    editor.guides = false;
+    let original = editor.history.document.clone();
+    let title = original.elements.iter().find(|e| e.id == "title").unwrap();
+    let origin = (title.x, title.y);
+    let mut view = editor.view(1440, 980);
+    let scale = view.scale;
+    let start = (
+        view.paper.x + (title.x + 100.) * scale,
+        view.paper.y + (title.y + 50.) * scale,
+    );
+    assert_eq!(
+        editor
+            .press(&mut view, start.0, start.1)
+            .unwrap()
+            .as_deref(),
+        Some("canvas")
+    );
+    drop(view);
+
+    // A different window size yields a different scale. The drag must keep
+    // the scale it started with until the host explicitly re-syncs it.
+    let resized = editor.view(1920, 1200);
+    assert!(
+        (resized.scale - scale).abs() > 0.001,
+        "fixture must produce two distinct scales"
+    );
+    editor.pointer_move(start.0 + 16.0 * scale, start.1 + 8.0 * scale);
+    editor.release().unwrap();
+
+    let after = editor.history.document.clone();
+    let moved = after.elements.iter().find(|e| e.id == "title").unwrap();
+    assert!(
+        (moved.x - origin.0 - 16.0).abs() < 0.01,
+        "drag used the wrong scale: x moved by {} instead of 16",
+        moved.x - origin.0
+    );
+    assert!((moved.y - origin.1 - 8.0).abs() < 0.01);
+}
+
+#[test]
+fn artwork_cache_tracks_edits_undo_resize_and_typography() {
+    let fixture = Fixture::new();
+    let mut editor = fixture.editor("artwork-cache.specimen.json");
+    editor.selected = Some("title".into());
+
+    let view = editor.view(1440, 980);
+    let _ = editor.render(&view).unwrap();
+    let first = editor.cached_artwork().unwrap().to_vec();
+    let misses = editor.perf.artwork_misses;
+    let _ = editor.render(&view).unwrap();
+    assert_eq!(
+        editor.perf.artwork_misses, misses,
+        "an unchanged document must hit the artwork cache"
+    );
+    assert_eq!(
+        editor.cached_artwork().unwrap(),
+        first.as_slice(),
+        "a cache hit returns the same pixels"
+    );
+
+    // Resizing changes the chrome, not the poster, so the artwork must stay.
+    let resized = editor.view(1920, 1200);
+    let frame = editor.render(&resized).unwrap();
+    assert_eq!(
+        editor.perf.artwork_misses, misses,
+        "resize must not invalidate the artwork cache"
+    );
+    assert_eq!(frame.width(), 1920, "the frame follows the window");
+
+    // A typography change must invalidate and repaint.
+    enter_field(&mut editor, "size", "121").unwrap();
+    let view = editor.view(1440, 980);
+    let _ = editor.render(&view).unwrap();
+    assert_eq!(
+        editor.perf.artwork_misses,
+        misses + 1,
+        "a typography change must re-render the artwork"
+    );
+    let typed = editor.cached_artwork().unwrap().to_vec();
+    assert_ne!(typed, first, "typography must change the artwork pixels");
+
+    // Undo and redo must each re-render once and restore exact pixels.
+    editor.action("undo").unwrap();
+    let view = editor.view(1440, 980);
+    let _ = editor.render(&view).unwrap();
+    assert_eq!(
+        editor.perf.artwork_misses,
+        misses + 2,
+        "undo re-renders once"
+    );
+    assert_eq!(
+        editor.cached_artwork().unwrap(),
+        first.as_slice(),
+        "undo restores the original artwork pixels"
+    );
+
+    editor.action("redo").unwrap();
+    let view = editor.view(1440, 980);
+    let _ = editor.render(&view).unwrap();
+    assert_eq!(
+        editor.perf.artwork_misses,
+        misses + 3,
+        "redo re-renders once"
+    );
+    assert_eq!(
+        editor.cached_artwork().unwrap(),
+        typed.as_slice(),
+        "redo restores the edited artwork pixels"
+    );
 }
 
 #[test]

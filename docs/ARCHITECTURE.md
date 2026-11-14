@@ -1,7 +1,7 @@
 # Application boundaries
 
 Specimen is a separate application repository. Its Hamesh dependency is pinned
-to public commit 9fa37c33a92620151e0fbfbd6e22c7ae32bccbf8; Muse's working checkout
+to public commit 53b0b96b7a1897737cb08e2139f62c07815d4817; Muse's working checkout
 is neither a dependency path nor a mutation target.
 
 - `document.rs`: validated versioned value model, atomic persistence and bounded
