@@ -118,12 +118,14 @@ Each of these was measured rather than assumed, and deliberately left alone:
    per mouse move (11.94 ms release, 446.91 ms debug). Covered by
    `pointer_move_only_bumps_the_revision_when_the_layer_actually_moves`.
 
-**These two are justified by measurement and by construction, not by a
-measured drag.** The harness could not drive a physical drag end to end in
-this session: `perf.json` shows `pointer_move_calls = 0` and
-`view_scale_calls = 0` in every run, even though the window reached the
-foreground (`fg_ok = true`) and no operation failed. Drag responsiveness was
-therefore **not** directly measured, and no drag-speed claim is made.
+**Update (finishing slice, 14 Nov 2026): both fixes are now proven by real
+drags.** `scripts/verify-drag.ps1` drives the actual Windows input path
+against the release executable: 5 gestures (text snap, shape snap, rapid
+motion, clamp-min, clamp-max) plus a 1 px no-op probe. Every gesture shows
+`drag_starts +1` and nonzero `pointer_move_calls`; `view_scale_calls` stays
+0 across all of them (no view rebuild per move); the no-op leaves the layer
+in place with only press/release bookkeeping revisions. See "Real-drag
+evidence" below.
 
 ## Correctness evidence alongside the numbers
 
@@ -140,10 +142,104 @@ therefore **not** directly measured, and no drag-speed claim is made.
   instead of `lineup`) - a selection difference in the script, not a
   rendering difference.
 
+## Finishing slice: view-build root cause, one more correction, real drags
+
+### The 5.177 -> 7.877 ms "regression" is a scenario-mix artifact
+
+`src/bin/view-bench.rs` builds views in-process with warmup (40) and timed
+iterations (120-200), reporting median/p95 per state, on both pins in
+release. Two trials each:
+
+| State (per-view p50) | old pin | new pin |
+|---|---|---|
+| Fit, no selection | 4.13-4.30 ms | 0.85-0.88 ms |
+| Fit, selected | 4.50-4.57 ms | 1.03-1.09 ms |
+| Typing (focused field) | 4.48-4.69 ms | 1.05-1.14 ms |
+| Churn (zoom cycling + undo/redo between builds) | 4.44 ms | 1.04 ms |
+
+Stage means per build (new pin): app construction ~0.33-0.44 ms,
+layout ~0.17-0.28 ms, ghost ~0.06-0.08 ms, scene ~0.24-0.36 ms.
+Old pin: layout ~2.6-2.8 ms, scene ~1.1-1.5 ms, app/ghost identical
+(~0.4/0.07 ms). P95s track p50s within ~15% on both pins.
+
+Conclusion: **there is no per-build view regression.** In matched states
+with warmup, 044 builds views 4-5x faster; Specimen-side construction is
+unchanged. The scenario averages (5.177 vs 7.877 ms, and 7.82 vs 10.35 ms
+across two identical runs of the same binary) conflate UI-state mix,
+cold/one-off effects and wall-clock preemption under harness load
+(a CLI process is spawned per Eye op). A fourth bench phase that cycles
+zoom and undo/redo between builds shows no churn effect (new-pin
+p50 1.04 ms), ruling out revision churn as the inflator. The trustworthy
+per-build comparison is the bench; the scenario totals measure
+end-to-end operator cost, which is what users feel.
+
+### Small correction: reuse the already-built view for ClickId/Type
+
+Each Eye click/type built the chrome twice: once to hit-test, once inside
+`press()`. `Host::press_in` reuses the existing view instead. On the
+identical scripted session (release): **view calls 282 -> 219 (-22%),
+view time 2221 -> 1713 ms (-508 ms)**, per-view unit cost unchanged
+(7.877 -> 7.823 ms), zero failures. The remaining per-action builds (one
+per key/map/detail/click) each do distinct hit-testing or serialization
+work; removing them would need a shared view cache, which this slice
+deliberately avoids.
+
+### Real-drag evidence (`scripts/verify-drag.ps1`, release, exit 0)
+
+| Gesture | Result | Counters | Input-to-visible-update |
+|---|---|---|---|
+| Text snap +53/+37 | landed (80,312) as computed (clamped) | starts +1, moves +8 | 23.3 ms avg, 5 frames |
+| Shape snap +61/-43 | landed (192,464) exact | starts +1, moves +8 | 22.1 ms avg, 8 frames |
+| Shape rapid +90/+60, 15 ms steps | landed (260,528) exact | starts +1, moves +3 | 22.3 ms avg, 3 frames |
+| Text clamp-min (far outside) | clamped (0,0) exact | starts +1, moves +4 | 22.9 ms avg, 4 frames |
+| Text clamp-max (far outside) | clamped (80,1084) exact | starts +1, moves +4 | 22.8 ms avg, 4 frames |
+| 1 px no-op from snapped grid | unmoved; rev +3 press/release only | starts +1, moves +2 | n/a |
+
+Every gesture also verified selection survival, single-undo-step restore
+of the pre-drag position, and redo restore. Save/reopen round-trips;
+`verify-artifact` on the final frame: **0 screen mismatches, export
+matches canonical pixels** (900 x 1200). `view_scale_calls` stayed 0
+throughout: no view rebuild per pointer move on the real path.
+
+Input-to-visible-update is UI-thread time from a revision-changing
+pointer move to the next presented frame (~22-23 ms in release, dominated
+by the ~12 ms frame). It is not a monitor refresh rate, and the Eye
+roundtrip adds its own process-spawn latency on top.
+
+Harness lessons recorded in the script: serialize cursor delivery ahead
+of the press with an Eye roundtrip (else the press can observe a stale
+cursor and the drag lands ~90 px off); verify the press selected the
+intended element (ring centres can belong to a smaller element painted
+in front - probe corners first); compute expectations with clamping;
+flatten Eye/document values to `[double]` at the call site.
+
+### Rendering correctness on the final head
+
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` clean;
+  **33 tests pass** (no-op revision/clamping, captured drag scale,
+  artwork-cache invalidation across edit/undo/redo/resize/typography).
+- `scripts/acceptance-044.ps1`: 16 phases, 103 operations, exit 0.
+- `scripts/verify-drag.ps1`: exit 0 (above).
+- Export parity: drag-run export is structurally identical to the
+  template project with only the dragged-layer positions changed;
+  `verify-artifact` confirms zero screen mismatches.
+
 ## Limits
 
-- One machine, one run per cell; no repeated-trial statistics.
+- One machine; scenario cells are single runs (bench cells are repeated
+  trials with warmup, median/p95 over 120-200 iterations x 2).
 - Operator latency includes one CLI process spawn per call.
 - Stage timers are UI-thread wall clock, not monitor frame rate.
 - No GPU measurement: the host uses Hamesh's CPU renderer.
-- The physical-drag path was not exercised (above).
+- Input-to-visible-update is measured to the presented frame, not to
+  photons; no high-speed camera verification.
+
+## Recommendation: a separate, modest visual-quality slice
+
+Responsiveness is accepted at the measurement level. The next slice
+should be visual quality, not performance: audit the poster for
+typographic hierarchy, spacing rhythm and the overlapping bottom text
+(`THE SIGNAL ROOM / LONDON` vs `FREQUENCY` in the starter), plus the
+inspector's draft-until-Enter behaviour Matthew reported ("little
+changing" - drafts give no preview). Keep it to presentation and
+feedback copy; no host rewrite, no new controls, no framework changes.

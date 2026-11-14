@@ -198,7 +198,19 @@ impl Host {
     }
     fn press(&mut self, x: f32, y: f32, release: bool) -> Result<Option<String>> {
         let mut view = self.view();
-        let hit = self.editor.press(&mut view, x, y)?;
+        self.press_in(&mut view, x, y, release)
+    }
+    /// Press using an already-built view of the current revision and size.
+    /// Callers that built a view for hit-testing must reuse it here instead
+    /// of rebuilding the unchanged chrome twice for one operator action.
+    fn press_in(
+        &mut self,
+        view: &mut editor::View,
+        x: f32,
+        y: f32,
+        release: bool,
+    ) -> Result<Option<String>> {
+        let hit = self.editor.press(view, x, y)?;
         if release {
             self.editor.release()?;
         }
@@ -224,7 +236,7 @@ impl Host {
                 if let Some(e) = self.stale(expect_rev) {
                     e
                 } else {
-                    let target_view = self.view();
+                    let mut target_view = self.view();
                     let actionable = target_view.app.get(&id).is_some_and(|c| {
                         c.enabled
                             && (matches!(
@@ -239,7 +251,7 @@ impl Host {
                         .map(|n| (n.rect.x + n.rect.w / 2.0, n.rect.y + n.rect.h / 2.0));
                     match center {
                         None => self.err("NOT_FOUND", id),
-                        Some((x, y)) => match self.press(x, y, true) {
+                        Some((x, y)) => match self.press_in(&mut target_view, x, y, true) {
                             Ok(hit) => {
                                 self.record(
                                     "ext.click",
@@ -298,13 +310,13 @@ impl Host {
                 }
             }
             Op::Type { id, text } => {
-                let view = self.view();
+                let mut view = self.view();
                 let target = view.app.get(&id);
                 if !target.is_some_and(|c| c.role == hamesh_core::Role::TextInput) {
                     self.err("BAD_OP", "type requires an ordinary text input")
                 } else {
                     let r = view.layout.get(&id).unwrap().rect.clone();
-                    match self.press(r.x + r.w / 2.0, r.y + r.h / 2.0, true) {
+                    match self.press_in(&mut view, r.x + r.w / 2.0, r.y + r.h / 2.0, true) {
                         Ok(Some(hit)) if hit == id => match self.editor.insert(&text) {
                             Ok(()) => {
                                 self.record("ext.type",&format!("HumanEquivalent focused={id}; {} characters via shared Composer path",text.chars().count()));
@@ -605,6 +617,11 @@ impl ApplicationHandler<UserEvent> for Host {
                                         let presented = buffer.present();
                                         self.editor.perf.present_ns += crate::perf::ns_since(t);
                                         self.editor.perf.frames += 1;
+                                        if let Some(t0) = self.editor.perf.last_bump.take() {
+                                            self.editor.perf.input_to_present_ns +=
+                                                crate::perf::ns_since(t0);
+                                            self.editor.perf.input_to_present_samples += 1;
+                                        }
                                         if let Err(e) = presented {
                                             eprintln!("present: {e}")
                                         }

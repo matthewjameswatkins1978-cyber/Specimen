@@ -27,6 +27,23 @@ pub struct Perf {
     /// View builds issued only to read the canvas scale during pointer tracking.
     pub view_scale_calls: u64,
     pub view_scale_ns: u64,
+    /// Component-tree construction inside `Editor::view` (Specimen side).
+    pub view_app_ns: u64,
+    /// Hamesh layout computation inside `Editor::view`.
+    pub view_layout_ns: u64,
+    /// Specimen ghost artwork-node insertion inside `Editor::view`.
+    pub view_ghost_ns: u64,
+    /// Hamesh scene construction inside `Editor::view`.
+    pub view_scene_ns: u64,
+    /// Drag gestures started by a press that selected artwork.
+    pub drag_starts: u64,
+    /// Input-to-visible-update samples: UI-thread time from a
+    /// revision-changing pointer move to the next presented frame.
+    pub input_to_present_ns: u64,
+    pub input_to_present_samples: u64,
+    /// Timestamp of the last revision-changing pointer move not yet
+    /// followed by a presented frame. Never serialised.
+    pub last_bump: Option<std::time::Instant>,
     /// `Editor::pointer_move` invocations while dragging.
     pub pointer_move_calls: u64,
     pub pointer_move_ns: u64,
@@ -77,6 +94,13 @@ impl Perf {
             "view_ns": self.view_ns,
             "view_scale_calls": self.view_scale_calls,
             "view_scale_ns": self.view_scale_ns,
+            "view_app_ns": self.view_app_ns,
+            "view_layout_ns": self.view_layout_ns,
+            "view_ghost_ns": self.view_ghost_ns,
+            "view_scene_ns": self.view_scene_ns,
+            "drag_starts": self.drag_starts,
+            "input_to_present_ns": self.input_to_present_ns,
+            "input_to_present_samples": self.input_to_present_samples,
             "pointer_move_calls": self.pointer_move_calls,
             "pointer_move_ns": self.pointer_move_ns,
             "record_calls": self.record_calls,

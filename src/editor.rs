@@ -411,6 +411,7 @@ impl Editor {
         });
     }
     pub fn view(&mut self, width: u32, height: u32) -> View {
+        let t_app = std::time::Instant::now();
         let mut app = App::new("specimen");
         app.get_mut("specimen").unwrap().props.extend([
             ("pad".into(), "0".into()),
@@ -945,7 +946,10 @@ impl Editor {
             }
         }
         app.revision = self.revision;
+        self.perf.view_app_ns += crate::perf::ns_since(t_app);
+        let t_layout = std::time::Instant::now();
         let mut layout = hamesh_layout::compute(&app, width as f32, height as f32);
+        self.perf.view_layout_ns += crate::perf::ns_since(t_layout);
         let area = layout.get("canvas").unwrap().rect.clone();
         let d = &self.history.document;
         let fit = ((area.w - 40.0) / d.width as f32)
@@ -1026,6 +1030,7 @@ impl Editor {
         }
         // Read-only document geometry in the Eye. Ghost nodes paint nothing and
         // never intercept Hamesh's pointer dispatch. Canvas stacking stays canonical.
+        let t_ghost = std::time::Instant::now();
         for (i, e) in d.elements.iter().enumerate() {
             let id = format!("art-{}", e.id);
             let c = Component::new(&id, Role::Other("ArtworkElement".into()), &e.name)
@@ -1061,7 +1066,10 @@ impl Editor {
                 },
             );
         }
+        self.perf.view_ghost_ns += crate::perf::ns_since(t_ghost);
+        let t_scene = std::time::Instant::now();
         let scene = hamesh_scene::build(&app, &layout, self.revision);
+        self.perf.view_scene_ns += crate::perf::ns_since(t_scene);
         // Commit the displayed window: paging acts on what is shown,
         // not a stale stored offset. Selection-follow re-arms only on
         // selection change; every other path re-derives the same start.
@@ -1432,6 +1440,7 @@ impl Editor {
                     origin: (e.x, e.y),
                     scale: view.scale,
                 });
+                self.perf.drag_starts += 1;
             }
             self.status = if self.selected.is_some() {
                 "Selected artwork. Drag or use the inspector.".into()
@@ -1471,10 +1480,15 @@ impl Editor {
             // Snapping or clamping can land the layer exactly where it
             // already is. A no-op move must not bump the revision, or every
             // mouse move forces a full frame rebuild for nothing.
+            let mut moved = false;
             if e.x != px || e.y != py {
                 e.x = px;
                 e.y = py;
                 self.revision += 1;
+                moved = true;
+            }
+            if moved {
+                self.perf.last_bump = Some(std::time::Instant::now());
             }
         }
     }
